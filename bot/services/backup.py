@@ -266,6 +266,10 @@ def restore_database_from_backup(
     try:
         with dst_conn:
             src_conn.backup(dst_conn)
+        try:
+            dst_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except sqlite3.Error:
+            pass
     finally:
         dst_conn.close()
         src_conn.close()
@@ -290,6 +294,7 @@ def restore_database_from_backup(
 def ensure_pre_update_backup(
     source_db_path: Optional[Path] = None,
     backup_dir: Optional[Path] = None,
+    output_manifest_path: Optional[Path] = None,
 ) -> bool:
     """
     Mandatory pre-update backup gatekeeper.
@@ -304,11 +309,15 @@ def ensure_pre_update_backup(
             "Pre-update backup: clean initial install detected (no database at %s). Update permitted.",
             src_path,
         )
+        if output_manifest_path:
+            Path(output_manifest_path).write_text("NONE", encoding="utf-8")
         return True
 
     # Check for empty file
     if src_path.stat().st_size == 0:
         logger.info("Pre-update backup: 0-byte database file; update permitted.")
+        if output_manifest_path:
+            Path(output_manifest_path).write_text("NONE", encoding="utf-8")
         return True
 
     logger.info("Pre-update backup: creating and verifying mandatory backup for %s...", src_path)
@@ -328,6 +337,9 @@ def ensure_pre_update_backup(
         if verified.sha256 != meta.sha256:
             logger.error("Pre-update backup verification failed: SHA-256 mismatch!")
             return False
+
+        if output_manifest_path:
+            Path(output_manifest_path).write_text(str(meta.backup_path), encoding="utf-8")
 
         logger.info(
             "Pre-update backup SUCCESS: %s verified (users=%d, txs=%d). Update permitted.",
@@ -349,20 +361,33 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
     parser = argparse.ArgumentParser(description="JnL-Bot Backup Management Utility")
     parser.add_argument("--pre-update", action="store_true", help="Run mandatory pre-update backup and verification")
+    parser.add_argument("--manifest-out", type=Path, default=None, help="File to write pre-update backup path into")
+    parser.add_argument("--source", type=Path, default=None, help="Explicit source database path")
+    parser.add_argument("--backup-dir", type=Path, default=None, help="Explicit backup directory path")
     parser.add_argument("--create", action="store_true", help="Create a manual backup")
     parser.add_argument("--tag", type=str, default="manual", help="Tag for manual backup")
     parser.add_argument("--list", action="store_true", help="List available local backups")
+    parser.add_argument("--verify", type=Path, default=None, help="Verify integrity of a database or backup file")
+    parser.add_argument("--compare-backup", type=str, default=None, help="Optional backup path to compare row counts against")
     parser.add_argument("--restore", type=Path, default=None, help="Path to backup to restore")
     parser.add_argument("--target", type=Path, default=None, help="Target path for restore")
 
     args = parser.parse_args()
 
     if args.pre_update:
-        ok = ensure_pre_update_backup()
+        ok = ensure_pre_update_backup(
+            source_db_path=args.source,
+            backup_dir=args.backup_dir,
+            output_manifest_path=args.manifest_out,
+        )
         sys.exit(0 if ok else 1)
 
     if args.create:
-        meta = create_database_backup(tag=args.tag)
+        meta = create_database_backup(
+            source_db_path=args.source,
+            backup_dir=args.backup_dir,
+            tag=args.tag,
+        )
         if meta:
             print(f"Backup created: {meta.backup_path} (users={meta.users_count}, txs={meta.transactions_count})")
             sys.exit(0)
@@ -370,9 +395,39 @@ def main() -> None:
             print("Failed to create backup (no source database found)")
             sys.exit(1)
 
+    if args.verify:
+        db_file = Path(args.verify).resolve()
+        if not db_file.exists() or db_file.stat().st_size == 0:
+            if args.compare_backup == "NONE":
+                print(f"Clean install: no database at {db_file} yet (matches pre-update state).")
+                sys.exit(0)
+            print(f"Error: Database file missing or empty: {db_file}")
+            sys.exit(1)
+        meta = verify_backup_integrity(db_file)
+        if args.compare_backup and args.compare_backup != "NONE":
+            cmp_path = Path(args.compare_backup).resolve()
+            if cmp_path.exists():
+                cmp_meta = verify_backup_integrity(cmp_path)
+                if (
+                    meta.users_count < cmp_meta.users_count
+                    or meta.transactions_count < cmp_meta.transactions_count
+                    or meta.recurring_count < cmp_meta.recurring_count
+                ):
+                    print(
+                        f"CRITICAL: Database row count regression detected! "
+                        f"Current=(u={meta.users_count}, t={meta.transactions_count}, r={meta.recurring_count}) < "
+                        f"PreUpdate=(u={cmp_meta.users_count}, t={cmp_meta.transactions_count}, r={cmp_meta.recurring_count})"
+                    )
+                    sys.exit(1)
+        print(
+            f"Verified OK: {db_file} (users={meta.users_count}, txs={meta.transactions_count}, "
+            f"recurring={meta.recurring_count}, sha256={meta.sha256[:12]}...)"
+        )
+        sys.exit(0)
+
     if args.list:
-        backups = list_backups()
-        print(f"Local backups in {settings.backup_dir}:")
+        backups = list_backups(backup_dir=args.backup_dir)
+        print(f"Local backups in {args.backup_dir or settings.backup_dir}:")
         for b in backups:
             print(f"  {b.name} ({b.stat().st_size} bytes)")
         sys.exit(0)
@@ -382,7 +437,7 @@ def main() -> None:
         if not target:
             print("Error: Target database path could not be resolved.")
             sys.exit(1)
-        meta = restore_database_from_backup(args.restore, target)
+        meta = restore_database_from_backup(args.restore, target, safety_backup_dir=args.backup_dir)
         print(f"Restored successfully to {target} (users={meta.users_count}, txs={meta.transactions_count})")
         sys.exit(0)
 

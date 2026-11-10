@@ -1,4 +1,0 @@
-# Scoped least-privilege permission for JnL-Bot updater service.
-# Allows jnl-bot user to ONLY restart the jnl-bot service and check its status.
-# Broad wildcards are strictly prohibited.
-jnl-bot ALL=(root) NOPASSWD: /bin/systemctl restart jnl-bot.service, /bin/systemctl is-active --quiet jnl-bot.service

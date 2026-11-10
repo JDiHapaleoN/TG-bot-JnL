@@ -82,9 +82,20 @@ async_session_factory = async_sessionmaker(
 async def init_db(target_engine: Optional[AsyncEngine] = None) -> None:
     """
     Safely initialize database schema and run non-destructive migrations.
-    Verifies database integrity and SQLite WAL-reset safety.
+    Verifies database integrity, rollback state, and SQLite WAL-reset safety.
     """
     eng = target_engine or engine
+    if str(eng.url).startswith("sqlite") and eng.url.database and eng.url.database != ":memory:":
+        from pathlib import Path as _Path
+        db_file = _Path(eng.url.database).resolve()
+        rollback_flag = db_file.parent / "db_rollback_failed.flag"
+        if rollback_flag.exists():
+            raise RuntimeError(
+                f"CRITICAL: Database rollback failure flag '{rollback_flag}' is present! "
+                "A previous update failed to roll back the database. "
+                "Refusing to start on an unverified or partially migrated database."
+            )
+
     async with eng.begin() as conn:
         if str(eng.url).startswith("sqlite"):
             # Verify actual SQLite runtime version via SQL connection
@@ -113,6 +124,10 @@ async def init_db(target_engine: Optional[AsyncEngine] = None) -> None:
             if status != "ok":
                 logger.error("Database integrity check reported: %s", status)
                 raise RuntimeError(f"Database integrity check failed: {status}")
+            fk_res = (await conn.execute(text("PRAGMA foreign_key_check"))).fetchall()
+            if fk_res:
+                logger.error("Database foreign_key_check reported violations: %s", fk_res)
+                raise RuntimeError(f"Database foreign_key_check failed: {fk_res}")
 
 
 async def dispose_db(target_engine: Optional[AsyncEngine] = None) -> None:

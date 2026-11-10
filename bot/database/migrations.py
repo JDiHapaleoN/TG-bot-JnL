@@ -10,8 +10,12 @@ Enforces the Expand-and-Contract migration pattern:
 from __future__ import annotations
 
 import argparse
+import fcntl
 import logging
+import os
+import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -24,6 +28,110 @@ from sqlalchemy.engine import Connection
 from bot.config import settings
 
 logger = logging.getLogger("migrations")
+
+
+def is_bot_active(db_path: Optional[Path] = None, check_systemd: bool = True) -> bool:
+    """
+    Detect if the JnL-Bot service or process is currently running:
+    1. Checks exclusive fcntl.flock on bot.lock in the database directory.
+    2. Checks 'systemctl is-active --quiet jnl-bot.service' when systemd is present.
+    """
+    from bot.services.backup import resolve_sqlite_db_path
+
+    target_db = Path(db_path).resolve() if db_path else resolve_sqlite_db_path()
+    if target_db:
+        lock_file_path = target_db.parent / "bot.lock"
+        if lock_file_path.exists():
+            try:
+                f = open(lock_file_path, "r+", encoding="utf-8")
+            except OSError:
+                try:
+                    f = open(lock_file_path, "r", encoding="utf-8")
+                except OSError:
+                    f = None
+            if f is not None:
+                try:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    f.close()
+                    return True
+                f.close()
+
+    if (
+        check_systemd
+        and os.getenv("JNL_SKIP_SYSTEMCTL_CHECK", "0") != "1"
+        and shutil.which("systemctl")
+    ):
+        try:
+            res = subprocess.run(
+                ["systemctl", "is-active", "--quiet", "jnl-bot.service"],
+                capture_output=True,
+                timeout=5,
+            )
+            if res.returncode == 0:
+                return True
+        except Exception:
+            pass
+
+    return False
+
+
+def apply_live_migrations(db_path: Optional[Path] = None, check_systemd: bool = True) -> bool:
+    """
+    Apply migrations to the stopped database only after verifying the bot is not running.
+    Acquires bot.lock exclusively during migration and verifies post-migration integrity.
+    """
+    from bot.services.backup import resolve_sqlite_db_path
+
+    src = Path(db_path).resolve() if db_path else resolve_sqlite_db_path()
+    if not src:
+        raise RuntimeError("Could not resolve SQLite database path for live migration.")
+
+    if is_bot_active(src, check_systemd=check_systemd):
+        raise RuntimeError(
+            "REFUSED: Active JnL-Bot instance detected (jnl-bot.service or bot.lock is active). "
+            "Stop jnl-bot.service before applying live schema migrations."
+        )
+
+    if not src.exists() or src.stat().st_size == 0:
+        logger.info("No existing database at %s; schema will be initialized on first startup.", src)
+        return True
+
+    src.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = src.parent / "bot.lock"
+    lock_fd = open(lock_path, "w", encoding="utf-8")
+    try:
+        try:
+            fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise RuntimeError(
+                f"REFUSED: Could not acquire exclusive lock on {lock_path} ({exc}). Bot is active."
+            )
+
+        eng = create_engine(f"sqlite:///{src}")
+        try:
+            with eng.begin() as conn:
+                run_safe_migrations(conn)
+
+            with eng.connect() as conn:
+                res = conn.execute(text("PRAGMA integrity_check")).fetchone()
+                if not res or res[0] != "ok":
+                    raise RuntimeError(f"Post-migration integrity_check failed: {res}")
+                fk_res = conn.execute(text("PRAGMA foreign_key_check")).fetchall()
+                if fk_res:
+                    raise RuntimeError(f"Post-migration foreign_key_check failed: {fk_res}")
+        finally:
+            eng.dispose()
+    finally:
+        try:
+            fcntl.flock(lock_fd.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        lock_fd.close()
+
+    logger.info("Migrations successfully applied and verified on %s", src)
+    return True
 
 
 def _get_existing_columns(sync_conn: Connection, table_name: str) -> Set[str]:
@@ -201,29 +309,35 @@ def test_migration_on_isolated_copy(source_db_path: Optional[Path] = None) -> bo
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
     parser = argparse.ArgumentParser(description="JnL-Bot Migration Manager")
+    parser.add_argument("--check-stopped", action="store_true", help="Verify bot service and bot.lock are stopped")
     parser.add_argument("--test-isolated", action="store_true", help="Run migration check on isolated copy")
-    parser.add_argument("--apply", action="store_true", help="Apply migrations to active database")
+    parser.add_argument("--apply", action="store_true", help="Apply migrations to stopped database")
+    parser.add_argument("--db-path", type=Path, default=None, help="Explicit database file path")
 
     args = parser.parse_args()
 
+    if args.check_stopped:
+        active = is_bot_active(db_path=args.db_path)
+        if active:
+            logger.error(
+                "REFUSED: JnL-Bot is currently running (jnl-bot.service or bot.lock is active). "
+                "Stop jnl-bot.service first before running updates or migrations."
+            )
+            sys.exit(1)
+        logger.info("Verified: JnL-Bot is stopped and database lock is free.")
+        sys.exit(0)
+
     if args.test_isolated:
-        ok = test_migration_on_isolated_copy()
+        ok = test_migration_on_isolated_copy(source_db_path=args.db_path)
         sys.exit(0 if ok else 1)
 
     if args.apply:
-        from bot.services.backup import resolve_sqlite_db_path
-        src = resolve_sqlite_db_path()
-        if not src:
-            logger.error("Could not resolve SQLite database path")
-            sys.exit(1)
-        eng = create_engine(f"sqlite:///{src}")
         try:
-            with eng.begin() as conn:
-                run_safe_migrations(conn)
-            logger.info("Migrations successfully applied to %s", src)
+            apply_live_migrations(db_path=args.db_path)
             sys.exit(0)
-        finally:
-            eng.dispose()
+        except Exception as exc:
+            logger.error("Live migration failed: %s", exc)
+            sys.exit(1)
 
     parser.print_help()
 

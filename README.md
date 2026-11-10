@@ -1,21 +1,22 @@
 # Personal Finance Bot (JnL-Bot)
 
-Telegram-бот + Telegram Mini App (WebApp) для быстрого учёта личных финансов (расходов, доходов, регулярных платежей и статистики) за 2–3 секунды с гарантией сохранности данных и отказоустойчивостью enterprise-уровня.
+Telegram-бот + Telegram Mini App (WebApp) для быстрого учёта личных финансов (расходов, доходов, регулярных платежей и статистики) за 2–3 секунды с гарантией сохранности данных и строгой изоляцией (Least Privilege) на VPS.
 
 ---
 
-## 🏛️ Архитектура и хранение данных
+## 🏛️ Архитектура и строгая изоляция данных
 
-Код и пользовательские данные **полностью разделены**:
+Код, конфигурация и пользовательские данные **физически разделены** и работают под выделенным непривилегированным системным пользователем `jnl-bot` (`User=jnl-bot`, `Group=jnl-bot`, `/usr/sbin/nologin`, без прав `root` и без `sudo`):
 
-| Компонент | Расположение на сервере | Назначение |
-|---|---|---|
-| **Исходный код** | `/opt/jnl-bot/` | Изолированный репозиторий Git и виртуальное окружение `.venv` |
-| **Постоянная база данных** | `/var/lib/jnl-bot/data/finance_bot.db` | Рабочая база данных SQLite (режим WAL, synchronous=FULL) |
-| **Локальные резервные копии** | `/var/lib/jnl-bot/backups/` | Горячие онлайн-бэкапы с SHA-256 манифестами |
-| **Облачные копии** | S3-совместимое хранилище | Клиентское AES-256-GCM шифрование, ротация 30 дней |
+| Компонент | Канонический путь на сервере | Права / Режим systemd | Назначение |
+|---|---|---|---|
+| **Исходный код и `.venv`** | `/opt/jnl-bot/` (точка входа: `/opt/jnl-bot/main.py`) | `0755` / `ReadOnlyPaths` | Изолированный Git-репозиторий и виртуальное окружение Python (SQLite 3.51.3+) |
+| **Постоянная база данных** | `/var/lib/jnl-bot/data/finance_bot.db` | `0700` / `ReadWritePaths` | Рабочая база данных SQLite (`journal_mode=WAL`, `synchronous=FULL`, `busy_timeout=15000`) |
+| **Локальные резервные копии** | `/var/lib/jnl-bot/backups/` | `0700` / `ReadWritePaths` | Горячие онлайн-бэкапы через SQLite Online Backup API с SHA-256 манифестами |
+| **Единый файл конфигурации** | `/var/lib/jnl-bot/.env` | `0600` / `ReadOnlyPaths` | Единственный канонический источник конфигурации и секретов в production |
+| **Облачные копии** | S3-совместимое хранилище (опционально) | AES-256-GCM (PBKDF2 600k) | Клиентское шифрование с поддержкой заголовка `JNL-ENC1` и обратной совместимостью |
 
-Символическая ссылка `/opt/jnl-bot/data -> /var/lib/jnl-bot/data` гарантирует обратную совместимость, защищая базу от перезаписи при любых Git-операциях.
+Каталоги клиентских сайтов и панели управления (`-/home`, `-/var/www`, `-/root`, `-/usr/local/hestia`, `-/etc/nginx`, `-/etc/apache2`, `-/etc/php`) заблокированы на уровне пространства имён ядра (`InaccessiblePaths`, `ProtectSystem=strict`, `ProtectHome=true`, `NoNewPrivileges=true`).
 
 ---
 
@@ -33,81 +34,140 @@ Telegram-бот + Telegram Mini App (WebApp) для быстрого учёта 
    - Номер телефона через кнопку **Telegram Contact**.
    - Офлайн-геолокация: определение страны, валюты (ISO 4217) и часового пояса без внешних API.
 3. **Безопасность и целостность данных**:
-   - SQLite в режиме **WAL** (Write-Ahead Logging) + `PRAGMA synchronous=FULL`.
+   - SQLite **3.51.3+** (с официальным исправлением уязвимости гонки `WAL-reset`) в режиме **WAL** + `PRAGMA synchronous=FULL`.
    - Точные расчёты сумм через **Python Decimal** (без ошибок округления `float`).
    - Идемпотентность Telegram Updates (`ProcessedUpdate`) и транзакций (`idempotency_key`).
    - Изоляция пользователей на уровне БД (проверка владения для всех CRUD-операций).
-   - Защита от split-brain через `bot.lock` (`fcntl.flock`).
-   - Маскирование токенов и секретов в логах (`SecretRedactingFilter`).
-4. **Резервное копирование и миграции**:
-   - Обязательный верифицированный бэкап перед любым обновлением из GitHub.
-   - Тестирование миграций на изолированной копии БД перед применением к рабочей базе.
-   - Миграции по методологии **Expand and Contract** (100% обратная совместимость при rollback).
-   - Клиентское шифрование AES-256-GCM для удалённого S3-хранилища.
-   - Ротация бэкапов (хранение до 30 локальных и удалённых версий).
+   - Защита от split-brain через эксклюзивную блокировку `/var/lib/jnl-bot/data/bot.lock` (`fcntl.flock`).
+   - Маскирование токенов и ключей шифрования в логах (`SecretRedactingFilter`).
 
 ---
 
-## ☁️ Установка на Ubuntu VPS (24/7 рядом с сайтом)
+## ☁️ Безопасная установка на Ubuntu VPS
 
-Установка полностью автоматизирована и безопасна для соседних сайтов, Nginx, HestiaCP и баз данных MySQL/PostgreSQL:
+> **Правило безопасности:** Никогда не передавайте `BOT_TOKEN` аргументом командной строки (аргументы процессов видны в `ps aux` и `/proc`). Инсталлятор автоматически отклонит запуск, если ему переданы аргументы командной строки, и никогда не запускает `apt-get` автоматически.
 
+### Шаг 1. Подготовка секрета в каноническом файле `/var/lib/jnl-bot/.env`
 ```bash
-# Выполните от root на сервере:
-curl -fsSL https://raw.githubusercontent.com/JDiHapaleoN/TG-bot-JnL/main/deploy/install_vps.sh | bash -s -- "ВАШ_ТОКЕН_БОТА"
+sudo install -d -m 750 /var/lib/jnl-bot
+sudo install -m 600 /dev/null /var/lib/jnl-bot/.env
+sudo nano /var/lib/jnl-bot/.env
+```
+Минимальное содержимое `/var/lib/jnl-bot/.env`:
+```env
+APP_ENV=production
+BOT_TOKEN=ваш_токен_от_BotFather
+DATABASE_URL=sqlite+aiosqlite:////var/lib/jnl-bot/data/finance_bot.db
+BACKUP_DIR=/var/lib/jnl-bot/backups
+WEBAPP_HOST=127.0.0.1
+WEBAPP_PORT=0
+S3_BACKUP_ENABLED=false
 ```
 
-Скрипт выполнит:
-1. Создание защищённых системных директорий `/var/lib/jnl-bot/data` и `/var/lib/jnl-bot/backups`.
-2. Клонирование репозитория в `/opt/jnl-bot`.
-3. Создание изолированного виртуального окружения `.venv`.
-4. Настройку `.env` с привязкой к `/var/lib/jnl-bot/data/finance_bot.db`.
-5. Проверку версии SQLite runtime и WAL-режима.
-6. Регистрацию и запуск сервисов `systemd`:
-   - `jnl-bot.service` (работа бота 24/7 с автоперезапуском при падении).
-   - `jnl-bot-updater.timer` (безопасный опрос GitHub каждые 60 секунд с проверкой pre-update бэкапа и автоматическим rollback при ошибках).
+### Шаг 2. Запуск изолированного инсталлятора (без аргументов)
+```bash
+git clone https://github.com/JDiHapaleoN/TG-bot-JnL.git /opt/jnl-bot
+sudo /opt/jnl-bot/deploy/install_vps.sh
+```
+*(Если `/var/lib/jnl-bot/.env` ещё не был создан, скрипт в интерактивном терминале запросит `BOT_TOKEN` со скрытым вводом `read -s`).*
+
+Что делает `install_vps.sh`:
+1. Проверяет наличие `python3`, `python3-venv` и `git` без автоматического запуска `apt-get`.
+2. Проверяет канонические пути (`realpath`), отсутствие неожиданных симлинков и точек монтирования (`mountpoint`).
+3. Создаёт непривилегированного системного пользователя и группу `jnl-bot`.
+4. Создаёт верифицированный бэкап существующей базы данных перед любыми операциями с репозиторием.
+5. Собирает и проверяет изолированный SQLite 3.51.3+ внутри `/opt/jnl-bot/.venv` и выполняет fail-closed проверку `python -m bot.database.check_sqlite`.
+6. Устанавливает и проверяет через `systemd-analyze verify` unit-файлы:
+   - `jnl-bot.service` (`ExecStart=/opt/jnl-bot/.venv/bin/python /opt/jnl-bot/main.py`, `User=jnl-bot`).
+   - `jnl-bot-updater.service` (`User=jnl-bot`, запускается вручную при остановленном боте).
+   - `jnl-bot-updater.timer` (**отключён по умолчанию**; расписание при ручном включении: `OnBootSec=15min`, `OnUnitActiveSec=1h`, однако для серверов с сайтом клиента рекомендуется только контролируемое обновление).
 
 ---
 
-## 🔐 Настройка независимого облачного бэкапа (S3)
+## 🔄 Контролируемая процедура обновления (Controlled Update Workflow)
 
-Для защиты от полной потери сервера (Disaster Recovery) настройте отправку шифрованных копий в S3-совместимое хранилище (AWS S3, Cloudflare R2, MinIO, Yandex Object Storage).
+Чтобы полностью исключить привилегированный `sudo` внутри песочницы `NoNewPrivileges=true` и гарантировать эксклюзивный доступ к базе данных при миграциях, обновление выполняется в 5 контролируемых шагов:
 
-В файле `/var/lib/jnl-bot/.env` (или `/opt/jnl-bot/.env`) добавьте параметры:
+```bash
+# 1. Администратор останавливает ТОЛЬКО сервис бота
+sudo systemctl stop jnl-bot.service
+
+# 2. Запуск непривилегированного апдейтера от имени пользователя jnl-bot (без root и без sudo)
+sudo -u jnl-bot /opt/jnl-bot/deploy/auto_update.sh
+# (или через systemd: sudo systemctl start jnl-bot-updater.service)
+
+# 3. Апдейтер проверяет, что бот остановлен, создаёт верифицированный pre-update бэкап,
+#    обновляет код и .venv, тестирует миграции на изолированной копии, применяет миграции,
+#    проверяет целостность БД и прогоняет тесты. При ошибке после старта миграции БД
+#    автоматически откатывает И код, И базу данных из pre-update бэкапа.
+
+# 4. После успешного завершения апдейтера администратор запускает бота
+sudo systemctl start jnl-bot.service
+
+# 5. Проверка статуса сервиса
+sudo systemctl status jnl-bot.service --no-pager
+```
+
+---
+
+## 🔐 Настройка облачного бэкапа (S3) и безопасное восстановление
+
+В файле `/var/lib/jnl-bot/.env` укажите параметры вашего S3-хранилища:
 
 ```env
 S3_BACKUP_ENABLED=true
-S3_ENDPOINT_URL=https://s3.eu-central-1.amazonaws.com # или URL Cloudflare R2 / Yandex Cloud
+S3_ENDPOINT_URL=https://s3.eu-central-1.amazonaws.com
 S3_ACCESS_KEY_ID=ваш_access_key
 S3_SECRET_ACCESS_KEY=ваш_secret_key
 S3_BUCKET_NAME=название_bucket
 S3_REGION_NAME=eu-central-1
-S3_ENCRYPTION_KEY=секретная_фраза_для_шифрования_aes256
+S3_ENCRYPTION_KEY=секретная_фраза_минимум_32_символа
 S3_RETENTION_DAYS=30
+S3_PBKDF2_ITERATIONS=600000
+ADMIN_TELEGRAM_ID=ваш_telegram_id
 ```
 
-Проверка работы S3:
+### Команды работы с облачным бэкапом (от имени `jnl-bot`):
 ```bash
-# Загрузка последней резервной копии в облако
-/opt/jnl-bot/.venv/bin/python -m bot.services.cloud_backup --upload-latest
+# Загрузка последней локальной резервной копии в S3
+sudo -u jnl-bot /opt/jnl-bot/.venv/bin/python -m bot.services.cloud_backup --upload-latest
 
-# Просмотр резервных копий в облаке
-/opt/jnl-bot/.venv/bin/python -m bot.services.cloud_backup --list
+# Список зашифрованных копий в S3
+sudo -u jnl-bot /opt/jnl-bot/.venv/bin/python -m bot.services.cloud_backup --list
+```
 
-# Тестовое восстановление после катастрофы
-/opt/jnl-bot/.venv/bin/python -m bot.services.cloud_backup --restore-latest --target /var/lib/jnl-bot/data/finance_bot.db
+### ⚠️ Безопасное восстановление из резервной копии
+**Никогда не восстанавливайте облачный бэкап напрямую поверх активной рабочей базы данных.** Всегда восстанавливайте копию сначала во временный изолированный файл и проверяйте её целостность:
+
+```bash
+# 1. Скачивание и расшифровка во временный изолированный файл (бот может продолжать работу)
+sudo -u jnl-bot /opt/jnl-bot/.venv/bin/python -m bot.services.cloud_backup \
+    --restore-latest \
+    --target /var/lib/jnl-bot/backups/restored_verify.db
+
+# 2. Проверка целостности (PRAGMA integrity_check, SHA-256 и количество записей)
+sudo -u jnl-bot /opt/jnl-bot/.venv/bin/python -m bot.services.backup \
+    --verify /var/lib/jnl-bot/backups/restored_verify.db
+
+# 3. Только после успешной верификации: остановка бота и контролируемый перенос в рабочую БД
+sudo systemctl stop jnl-bot.service
+sudo -u jnl-bot /opt/jnl-bot/.venv/bin/python -m bot.services.backup \
+    --restore /var/lib/jnl-bot/backups/restored_verify.db \
+    --target /var/lib/jnl-bot/data/finance_bot.db
+sudo rm -f /var/lib/jnl-bot/backups/restored_verify.db*
+sudo systemctl start jnl-bot.service
 ```
 
 ---
 
 ## 🛠️ Диагностика SQLite и тестирование
 
-Проверка runtime-версии SQLite, директив PRAGMA и конкурентной записи WAL:
+Проверка runtime-версии SQLite (>= 3.51.3), директив PRAGMA и конкурентной записи WAL:
 ```bash
 /opt/jnl-bot/.venv/bin/python -m bot.database.check_sqlite
 ```
 
-Запуск всех автоматизированных тестов (36 тестов: юнит, аудит, инфраструктура):
+Запуск полного набора автоматизированных тестов (все тесты используют исключительно изолированные временные базы данных):
 ```bash
 /opt/jnl-bot/.venv/bin/python -m unittest discover -s tests -v
 ```
