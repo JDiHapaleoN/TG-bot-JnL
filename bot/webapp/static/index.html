@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Personal Finance Bot</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <!-- Main Card matching Screenshot 1 -->
+    <header class="top-card">
+      <div class="brand-row">
+        <h1 class="brand-title">Personal Finance Bot</h1>
+        <span class="badge-pill" id="currency-badge">EUR</span>
+      </div>
+
+      <div class="balance-block">
+        <div class="balance-value" id="balance-value">€0.00</div>
+        <div class="balance-label" data-i18n="current_balance">Текущий баланс</div>
+      </div>
+
+      <hr class="divider" />
+
+      <div class="monthly-row">
+        <div class="monthly-col">
+          <div class="monthly-label" data-i18n="monthly_income">Доходы за месяц</div>
+          <div class="monthly-value income-text" id="month-income">+ €0.00</div>
+        </div>
+        <div class="monthly-col">
+          <div class="monthly-label" data-i18n="monthly_expense">Расходы за месяц</div>
+          <div class="monthly-value expense-text" id="month-expense">− €0.00</div>
+        </div>
+      </div>
+
+      <hr class="divider" />
+
+      <!-- 2-Second Quick Entry Bar -->
+      <form id="quick-entry-form" class="quick-bar">
+        <input
+          type="text"
+          id="quick-input"
+          class="quick-input"
+          placeholder="Быстрый ввод: 5 Обед, 12.50, +1500 Зарплата..."
+          autocomplete="off"
+        />
+        <button type="submit" class="quick-submit-btn">➤</button>
+      </form>
+
+      <!-- Main Menu Grid matching Screenshot 1 -->
+      <div class="section-heading" data-i18n="main_menu">Основное меню</div>
+      <div class="menu-grid">
+        <button type="button" class="menu-btn" onclick="openTxModal('expense')">
+          <svg class="menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <circle cx="12" cy="12" r="9"></circle>
+            <line x1="12" y1="8" x2="12" y2="16"></line>
+            <line x1="8" y1="12" x2="16" y2="12"></line>
+          </svg>
+          <span data-i18n="btn_add_expense">Добавить расход</span>
+        </button>
+
+        <button type="button" class="menu-btn" onclick="openTxModal('income')">
+          <svg class="menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <rect x="3" y="6" width="18" height="13" rx="2"></rect>
+            <path d="M16 12.5h.01"></path>
+            <path d="M3 10h18"></path>
+          </svg>
+          <span data-i18n="btn_add_income">Добавить доход</span>
+        </button>
+
+        <button type="button" class="menu-btn" id="tab-btn-stats" onclick="switchPanel('stats')">
+          <svg class="menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <polyline points="3 17 9 11 13 15 21 7"></polyline>
+            <polyline points="16 7 21 7 21 12"></polyline>
+          </svg>
+          <span data-i18n="btn_stats">Статистика</span>
+        </button>
+
+        <button type="button" class="menu-btn" id="tab-btn-history" onclick="switchPanel('history')">
+          <svg class="menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <circle cx="12" cy="12" r="9"></circle>
+            <polyline points="12 7 12 12 15 15"></polyline>
+          </svg>
+          <span data-i18n="btn_history">История</span>
+        </button>
+      </div>
+
+      <button type="button" class="menu-btn full-width-btn" id="tab-btn-recurring" onclick="switchPanel('recurring')">
+        <svg class="menu-icon-inline" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+          <polyline points="23 4 23 10 17 10"></polyline>
+          <polyline points="1 20 1 14 7 14"></polyline>
+          <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+        </svg>
+        <span data-i18n="btn_recurring">Регулярные доходы и расходы</span>
+      </button>
+
+      <button type="button" class="menu-btn full-width-btn" id="tab-btn-profile" onclick="switchPanel('profile')">
+        <svg class="menu-icon-inline" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+          <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+          <circle cx="12" cy="7" r="4"></circle>
+        </svg>
+        <span data-i18n="btn_profile">Мой профиль и настройки</span>
+      </button>
+    </header>
+
+    <!-- Dynamic Sub-Panels -->
+    <main id="panel-container">
+      <!-- Statistics Panel -->
+      <section class="sub-card hidden" id="panel-stats">
+        <div class="panel-header">
+          <h2 data-i18n="stats_title">📊 Финансовая статистика</h2>
+        </div>
+        <div class="stats-grid">
+          <div class="stat-item">
+            <span class="stat-label" data-i18n="stat_today_exp">Расходы за день</span>
+            <span class="stat-val" id="stat-today-exp">− €0.00</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label" data-i18n="stat_week_exp">Расходы за неделю</span>
+            <span class="stat-val" id="stat-week-exp">− €0.00</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label" data-i18n="stat_month_exp">Расходы за месяц</span>
+            <span class="stat-val" id="stat-month-exp">− €0.00</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label" data-i18n="stat_total_inc">Общие доходы</span>
+            <span class="stat-val income-positive" id="stat-total-inc">+ €0.00</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label" data-i18n="stat_net_diff">Разница (доходы − расходы)</span>
+            <span class="stat-val" id="stat-net-diff">€0.00</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label" data-i18n="current_balance">Текущий баланс</span>
+            <span class="stat-val income-positive" id="stat-balance">€0.00</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- History Panel -->
+      <section class="sub-card" id="panel-history">
+        <div class="panel-header">
+          <h2 data-i18n="history_title">🕒 История операций</h2>
+          <span class="muted-count" id="history-count">0</span>
+        </div>
+        <div id="history-list" class="tx-list"></div>
+      </section>
+
+      <!-- Recurring Panel -->
+      <section class="sub-card hidden" id="panel-recurring">
+        <div class="panel-header">
+          <h2 data-i18n="btn_recurring">🔄 Регулярные операции</h2>
+          <button type="button" class="small-action-btn" onclick="openRecurringModal()">+ Добавить</button>
+        </div>
+        <div id="recurring-list" class="tx-list"></div>
+      </section>
+
+      <!-- Profile Panel -->
+      <section class="sub-card hidden" id="panel-profile">
+        <div class="panel-header">
+          <h2 data-i18n="btn_profile">👤 Мой профиль и настройки</h2>
+        </div>
+        <form id="profile-form" class="profile-form">
+          <label class="form-field">
+            <span data-i18n="lbl_name">Имя пользователя</span>
+            <input type="text" id="prof-name" required />
+          </label>
+          <label class="form-field">
+            <span data-i18n="lbl_phone">Номер телефона</span>
+            <input type="text" id="prof-phone" />
+          </label>
+          <label class="form-field">
+            <span data-i18n="lbl_country">Страна</span>
+            <select id="prof-country"></select>
+          </label>
+          <label class="form-field">
+            <span data-i18n="lbl_currency">Основная валюта (ISO 4217)</span>
+            <select id="prof-currency"></select>
+          </label>
+          <label class="form-field">
+            <span data-i18n="lbl_timezone">Часовой пояс</span>
+            <select id="prof-timezone"></select>
+          </label>
+          <label class="form-field">
+            <span data-i18n="lbl_language">Язык интерфейса</span>
+            <select id="prof-language">
+              <option value="ru">🇷🇺 Русский</option>
+              <option value="en">🇬🇧 English</option>
+            </select>
+          </label>
+          <label class="checkbox-row">
+            <input type="checkbox" id="prof-notify-rec" />
+            <span data-i18n="lbl_notify_rec">Уведомления о регулярных платежах</span>
+          </label>
+          <label class="checkbox-row">
+            <input type="checkbox" id="prof-daily-rem" />
+            <span data-i18n="lbl_daily_rem">Напоминания о записи расходов</span>
+          </label>
+          <div class="reg-meta">
+            <span data-i18n="lbl_reg_date">Дата регистрации:</span>
+            <strong id="prof-reg-date">—</strong>
+          </div>
+          <button type="submit" class="primary-btn" data-i18n="btn_save_profile">Сохранить настройки</button>
+        </form>
+      </section>
+    </main>
+  </div>
+
+  <!-- Add / Edit Transaction Modal -->
+  <div class="modal-backdrop hidden" id="tx-modal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="tx-modal-title">Добавить расход</h3>
+        <button type="button" class="close-btn" onclick="closeTxModal()">✕</button>
+      </div>
+      <form id="tx-modal-form" class="profile-form">
+        <input type="hidden" id="tx-modal-id" />
+        <input type="hidden" id="tx-modal-type" value="expense" />
+        <label class="form-field">
+          <span data-i18n="lbl_amount">Сумма</span>
+          <input type="number" step="0.01" min="0.01" id="tx-modal-amount" placeholder="12.50" required />
+        </label>
+        <label class="form-field">
+          <span data-i18n="lbl_desc">Описание (необязательно)</span>
+          <input type="text" id="tx-modal-desc" placeholder="Обед в McDonald's" />
+        </label>
+        <button type="submit" class="primary-btn" data-i18n="btn_save">Сохранить</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Add Recurring Modal -->
+  <div class="modal-backdrop hidden" id="rec-modal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 data-i18n="add_rec_title">Новая регулярная операция</h3>
+        <button type="button" class="close-btn" onclick="closeRecurringModal()">✕</button>
+      </div>
+      <form id="rec-modal-form" class="profile-form">
+        <label class="form-field">
+          <span data-i18n="lbl_type">Тип операции</span>
+          <select id="rec-type">
+            <option value="expense">📉 Расход (Аренда, Подписка, Интернет)</option>
+            <option value="income">📈 Доход (Зарплата, Стипендия)</option>
+          </select>
+        </label>
+        <label class="form-field">
+          <span data-i18n="lbl_title">Название</span>
+          <input type="text" id="rec-title" placeholder="Аренда квартиры / Зарплата" required />
+        </label>
+        <label class="form-field">
+          <span data-i18n="lbl_amount">Сумма</span>
+          <input type="number" step="0.01" min="0.01" id="rec-amount" placeholder="500.00" required />
+        </label>
+        <label class="form-field">
+          <span data-i18n="lbl_period">Периодичность</span>
+          <select id="rec-period">
+            <option value="monthly">Ежемесячно</option>
+            <option value="weekly">Еженедельно</option>
+            <option value="daily">Ежедневно</option>
+            <option value="yearly">Ежегодно</option>
+          </select>
+        </label>
+        <label class="form-field">
+          <span data-i18n="lbl_next_date">Дата следующего списания/начисления</span>
+          <input type="date" id="rec-date" required />
+        </label>
+        <button type="submit" class="primary-btn" data-i18n="btn_save">Создать</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Toast Receipt Banner -->
+  <div id="toast-banner" class="toast-banner hidden"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
+

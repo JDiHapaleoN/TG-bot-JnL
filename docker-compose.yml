@@ -1,0 +1,11 @@
+services:
+  jnl-bot:
+    build: .
+    container_name: jnl-finance-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "${WEBAPP_PORT:-8080}:8080"
+    volumes:
+      - ./data:/app/data

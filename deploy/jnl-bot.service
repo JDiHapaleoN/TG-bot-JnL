@@ -1,0 +1,17 @@
+[Unit]
+Description=Personal Finance Telegram Bot (JnL-Bot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/jnl-bot
+ExecStart=/opt/jnl-bot/.venv/bin/python /opt/jnl-bot/main.py
+Restart=always
+RestartSec=5
+EnvironmentFile=/opt/jnl-bot/.env
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
