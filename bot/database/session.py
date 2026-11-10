@@ -2,9 +2,9 @@
 
 import logging
 import sys
-from typing import Optional
+from typing import Optional, Tuple
 
-# Transparently upgrade SQLite C-runtime to modern build if pysqlite3-binary is available
+# Transparently upgrade SQLite C-runtime to modern build if pysqlite3 is available
 try:
     import pysqlite3
     sys.modules["sqlite3"] = pysqlite3
@@ -24,6 +24,29 @@ from bot.database.migrations import run_safe_migrations
 from bot.database.models import Base
 
 logger = logging.getLogger(__name__)
+
+
+def parse_sqlite_version(ver_str: str) -> Tuple[int, ...]:
+    """Parse SQLite version string into integer tuple."""
+    parts = []
+    for chunk in ver_str.split("."):
+        digits = "".join(c for c in chunk if c.isdigit())
+        if digits:
+            parts.append(int(digits))
+    return tuple(parts)
+
+
+def is_sqlite_wal_safe(ver_tuple: Tuple[int, ...]) -> bool:
+    """
+    Check if SQLite version contains the official WAL-reset fix.
+    - Mainstream: >= 3.51.3
+    - Official Backports: 3.50.7, 3.44.6
+    """
+    if ver_tuple >= (3, 51, 3):
+        return True
+    if ver_tuple[:3] in ((3, 50, 7), (3, 44, 6)):
+        return True
+    return False
 
 
 def configure_sqlite_engine(target_engine: AsyncEngine) -> None:
@@ -59,12 +82,31 @@ async_session_factory = async_sessionmaker(
 async def init_db(target_engine: Optional[AsyncEngine] = None) -> None:
     """
     Safely initialize database schema and run non-destructive migrations.
-    Verifies database integrity without ever dropping or overwriting user tables.
+    Verifies database integrity and SQLite WAL-reset safety.
     """
     eng = target_engine or engine
     async with eng.begin() as conn:
+        if str(eng.url).startswith("sqlite"):
+            # Verify actual SQLite runtime version via SQL connection
+            res_ver = await conn.execute(text("SELECT sqlite_version()"))
+            ver_str = str(res_ver.scalar() or "0.0.0")
+            ver_tuple = parse_sqlite_version(ver_str)
+
+            if not is_sqlite_wal_safe(ver_tuple):
+                msg = (
+                    f"Insecure SQLite runtime version {ver_str}. "
+                    "SQLite >= 3.51.3 or official backports (3.50.7 / 3.44.6) are required "
+                    "to prevent the WAL-reset database corruption bug."
+                )
+                if settings.app_env == "production":
+                    logger.critical("FATAL: %s", msg)
+                    raise RuntimeError(f"FATAL: {msg}")
+                else:
+                    logger.warning("DEVELOPMENT WARNING: %s", msg)
+
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(run_safe_migrations)
+
         if str(eng.url).startswith("sqlite"):
             res = await conn.execute(text("PRAGMA integrity_check"))
             status = res.scalar()

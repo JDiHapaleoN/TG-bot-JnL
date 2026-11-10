@@ -1,12 +1,31 @@
 [Unit]
-Description=JnL-Bot GitHub Auto-Updater
+Description=JnL-Bot Controlled Updater Service
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
+User=jnl-bot
+Group=jnl-bot
 WorkingDirectory=/opt/jnl-bot
 ExecStart=/opt/jnl-bot/deploy/auto_update.sh
 StandardOutput=journal
 StandardError=journal
 
+# Security Hardening & Sandboxing
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+PrivateDevices=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# ReadWritePaths needed for code update, dependencies, data and backups
+ReadWritePaths=/opt/jnl-bot /var/lib/jnl-bot/data /var/lib/jnl-bot/backups
+InaccessiblePaths=/home /var/www /root /usr/local/hestia /etc/nginx /etc/apache2 /etc/php /var/log/nginx /var/log/apache2 /var/log/hestia

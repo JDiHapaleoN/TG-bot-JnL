@@ -13,7 +13,7 @@ from pathlib import Path
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from bot.database.session import configure_sqlite_engine
+from bot.database.session import configure_sqlite_engine, is_sqlite_wal_safe, parse_sqlite_version
 
 
 def get_sqlite_runtime_info() -> dict:
@@ -30,31 +30,25 @@ def get_sqlite_runtime_info() -> dict:
 
 def analyze_sqlite_version(sqlite_ver_info: tuple[int, ...]) -> dict:
     """
-    Evaluate SQLite runtime version against known WAL issues and advisories.
-    SQLite advisory note: WAL-reset issues and corner cases under rapid uncommitted resets
-    were addressed across 3.45-3.51.3 releases.
+    Evaluate SQLite runtime version against the WAL-reset bug advisory.
+    The WAL-reset bug affects all versions prior to 3.51.3 except verified backports (3.50.7, 3.44.6).
     """
     version_str = ".".join(str(x) for x in sqlite_ver_info[:3])
     recommendations = []
+    is_safe = is_sqlite_wal_safe(sqlite_ver_info)
 
-    # WAL-reset bug advisory check:
-    # Versions below 3.51.3 may exhibit WAL index reset quirks under abnormal crash recoveries
-    is_vulnerable_wal_reset = sqlite_ver_info < (3, 51, 3)
-
-    if is_vulnerable_wal_reset:
+    if not is_safe:
         recommendations.append(
-            f"Current SQLite runtime is {version_str}. "
-            "To maximize durability against WAL-reset corner cases: "
-            "1. Keep PRAGMA synchronous=FULL enabled (already configured in JnL-Bot). "
-            "2. Keep PRAGMA wal_checkpoint(TRUNCATE) before backups. "
-            "3. If desired on Ubuntu 22.04, install 'pysqlite3-binary' for SQLite >= 3.49+."
+            f"VULNERABLE RUNTIME: SQLite {version_str} does not include the official WAL-reset fix. "
+            "SQLite >= 3.51.3 or backports (3.50.7 / 3.44.6) are required. "
+            "Run 'deploy/install_sqlite_amalgamation.py' to compile a safe runtime in .venv."
         )
     else:
-        recommendations.append(f"SQLite version {version_str} includes latest WAL durability fixes.")
+        recommendations.append(f"VERIFIED SAFE: SQLite {version_str} includes the official WAL-reset fix.")
 
     return {
         "version": version_str,
-        "wal_reset_advisory_applicable": is_vulnerable_wal_reset,
+        "wal_reset_safe": is_safe,
         "recommendations": recommendations,
     }
 
@@ -72,10 +66,14 @@ async def verify_runtime_pragmas(db_path: Path) -> dict:
         busy_timeout = (await conn.execute(text("PRAGMA busy_timeout"))).scalar()
         foreign_keys = (await conn.execute(text("PRAGMA foreign_keys"))).scalar()
 
+        # Also query the actual SQL engine version directly from the connection
+        sql_ver = (await conn.execute(text("SELECT sqlite_version()"))).scalar()
+
         results["journal_mode"] = str(journal_mode).lower()
         results["synchronous"] = int(synchronous) if synchronous is not None else -1
         results["busy_timeout"] = int(busy_timeout) if busy_timeout is not None else -1
         results["foreign_keys"] = int(foreign_keys) if foreign_keys is not None else -1
+        results["sqlite_version"] = str(sql_ver)
 
     await engine.dispose()
     return results
@@ -158,7 +156,11 @@ async def main_async() -> int:
         print(f"  • synchronous  : {pragmas['synchronous']} (Expected: 2 / FULL)")
         print(f"  • busy_timeout : {pragmas['busy_timeout']} ms (Expected: 15000)")
         print(f"  • foreign_keys : {pragmas['foreign_keys']} (Expected: 1 / ON)")
+        print(f"  • connection ver: {pragmas['sqlite_version']}")
         print("-" * 60)
+
+        conn_tuple = parse_sqlite_version(pragmas["sqlite_version"])
+        conn_safe = is_sqlite_wal_safe(conn_tuple)
 
         assert pragmas["journal_mode"] == "wal", f"journal_mode is {pragmas['journal_mode']}, expected wal"
         assert pragmas["synchronous"] in (2, 3), f"synchronous is {pragmas['synchronous']}, expected 2"
@@ -167,8 +169,13 @@ async def main_async() -> int:
         await run_concurrency_stress_test(test_db, writers_count=15, reads_count=30)
         print("✅ Concurrency Stress Test PASSED: 0 locks, 0 errors.")
 
+    if not conn_safe:
+        print("❌ CRITICAL: The connection SQLite runtime fails WAL safety check.")
+        print(f"   Detected version: {pragmas['sqlite_version']}. Required: >= 3.51.3 or backport (3.50.7 / 3.44.6).")
+        return 1
+
     print("=" * 60)
-    print("All SQLite diagnostics and WAL checks completed successfully.")
+    print("✅ All SQLite diagnostics and WAL checks completed successfully.")
     print("=" * 60)
     return 0
 

@@ -5,14 +5,44 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+User=jnl-bot
+Group=jnl-bot
 WorkingDirectory=/opt/jnl-bot
-ExecStart=/opt/jnl-bot/.venv/bin/python /opt/jnl-bot/main.py
+ExecStart=/opt/jnl-bot/.venv/bin/python /opt/jnl-bot/run.py
 Restart=always
 RestartSec=5
-EnvironmentFile=/opt/jnl-bot/.env
+TimeoutStopSec=10
+KillMode=mixed
+
+# Environment configuration: single canonical location
+EnvironmentFile=/var/lib/jnl-bot/.env
+
+# Logging
 StandardOutput=journal
 StandardError=journal
 
+# Security Hardening & Sandboxing (Least Privilege)
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+PrivateDevices=true
+MemoryDenyWriteExecute=no
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Explicit filesystem access control
+# Allow read-write ONLY to JnL-Bot data and backups
+ReadWritePaths=/var/lib/jnl-bot/data /var/lib/jnl-bot/backups
+# Allow read-only to code and .env configuration
+ReadOnlyPaths=/opt/jnl-bot /var/lib/jnl-bot/.env
+# Explicitly block access to all client website, web server, and HestiaCP directories
+InaccessiblePaths=/home /var/www /root /usr/local/hestia /etc/nginx /etc/apache2 /etc/php /var/log/nginx /var/log/apache2 /var/log/hestia
+
 [Install]
 WantedBy=multi-user.target
-
