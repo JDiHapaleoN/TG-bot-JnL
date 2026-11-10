@@ -20,7 +20,17 @@ def _default_backup_dir() -> Path:
         p.mkdir(parents=True, exist_ok=True)
         return p
 
-    # On Linux servers (like Ubuntu VPS), standard location is /var/backups/jnl-bot
+    # Standard production location on Linux VPS strictly isolated in /var/lib/jnl-bot/backups
+    isolated_prod_backup = Path("/var/lib/jnl-bot/backups")
+    var_lib = Path("/var/lib")
+    if isolated_prod_backup.exists() or (var_lib.exists() and os.access(var_lib, os.W_OK)):
+        try:
+            isolated_prod_backup.mkdir(parents=True, exist_ok=True)
+            return isolated_prod_backup
+        except OSError:
+            pass
+
+    # Legacy fallback: /var/backups/jnl-bot
     var_backups = Path("/var/backups")
     standard_dir = var_backups / "jnl-bot"
     if standard_dir.exists() or (var_backups.exists() and os.access(var_backups, os.W_OK)):

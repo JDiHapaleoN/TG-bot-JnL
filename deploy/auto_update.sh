@@ -5,7 +5,7 @@ set -euo pipefail
 
 INSTALL_DIR="/opt/jnl-bot"
 PERSISTENT_DATA_DIR="/var/lib/jnl-bot/data"
-BACKUP_DIR="/var/backups/jnl-bot"
+BACKUP_DIR="/var/lib/jnl-bot/backups"
 
 mkdir -p "$PERSISTENT_DATA_DIR" "$BACKUP_DIR"
 chmod 700 "$PERSISTENT_DATA_DIR" "$BACKUP_DIR"

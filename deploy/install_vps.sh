@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Safe, isolated installer for JnL-Bot on Ubuntu VPS (HestiaCP / Nginx safe)
-# Physically separates code (/opt/jnl-bot), database (/var/lib/jnl-bot/data), and backups (/var/backups/jnl-bot).
+# Physically separates code (/opt/jnl-bot), database (/var/lib/jnl-bot/data), and backups (/var/lib/jnl-bot/backups).
 set -euo pipefail
 
 INSTALL_DIR="/opt/jnl-bot"
 PERSISTENT_DATA_DIR="/var/lib/jnl-bot/data"
-BACKUP_DIR="/var/backups/jnl-bot"
+BACKUP_DIR="/var/lib/jnl-bot/backups"
 REPO_URL="https://github.com/JDiHapaleoN/TG-bot-JnL.git"
 TOKEN_ARG="${1:-}"
 

@@ -12,7 +12,7 @@ Telegram-бот + Telegram Mini App (WebApp) для быстрого учёта 
 |---|---|---|
 | **Исходный код** | `/opt/jnl-bot/` | Изолированный репозиторий Git и виртуальное окружение `.venv` |
 | **Постоянная база данных** | `/var/lib/jnl-bot/data/finance_bot.db` | Рабочая база данных SQLite (режим WAL, synchronous=FULL) |
-| **Локальные резервные копии** | `/var/backups/jnl-bot/` | Горячие онлайн-бэкапы с SHA-256 манифестами |
+| **Локальные резервные копии** | `/var/lib/jnl-bot/backups/` | Горячие онлайн-бэкапы с SHA-256 манифестами |
 | **Облачные копии** | S3-совместимое хранилище | Клиентское AES-256-GCM шифрование, ротация 30 дней |
 
 Символическая ссылка `/opt/jnl-bot/data -> /var/lib/jnl-bot/data` гарантирует обратную совместимость, защищая базу от перезаписи при любых Git-операциях.
@@ -58,7 +58,7 @@ curl -fsSL https://raw.githubusercontent.com/JDiHapaleoN/TG-bot-JnL/main/deploy/
 ```
 
 Скрипт выполнит:
-1. Создание защищённых системных директорий `/var/lib/jnl-bot/data` и `/var/backups/jnl-bot`.
+1. Создание защищённых системных директорий `/var/lib/jnl-bot/data` и `/var/lib/jnl-bot/backups`.
 2. Клонирование репозитория в `/opt/jnl-bot`.
 3. Создание изолированного виртуального окружения `.venv`.
 4. Настройку `.env` с привязкой к `/var/lib/jnl-bot/data/finance_bot.db`.
