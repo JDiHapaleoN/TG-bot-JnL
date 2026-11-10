@@ -43,3 +43,4 @@ echo "✅ Installation complete!"
 echo "1. Put your BOT_TOKEN in: nano /opt/jnl-bot/.env"
 echo "2. Start the bot 24/7:    sudo systemctl restart jnl-bot"
 echo "3. Check status/logs:     sudo systemctl status jnl-bot"
+

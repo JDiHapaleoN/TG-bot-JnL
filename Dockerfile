@@ -12,6 +12,6 @@ COPY . .
 
 RUN mkdir -p /app/data
 
-EXPOSE 8080
+EXPOSE 8095
 
 CMD ["python", "main.py"]

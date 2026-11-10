@@ -6,6 +6,6 @@ services:
     env_file:
       - .env
     ports:
-      - "${WEBAPP_PORT:-8080}:8080"
+      - "127.0.0.1:${WEBAPP_PORT:-8095}:8095"
     volumes:
       - ./data:/app/data
