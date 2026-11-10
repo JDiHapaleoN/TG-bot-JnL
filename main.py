@@ -16,7 +16,7 @@ from bot.config import BASE_DIR, settings
 from bot.database.session import dispose_db, init_db
 from bot.handlers import menu, profile, recurring, start, stats, transactions
 from bot.middlewares.reliability import ReliabilityMiddleware, SecretRedactingFilter
-from bot.services.backup import create_database_backup
+from bot.services.backup import create_database_backup, resolve_sqlite_db_path
 from bot.services.scheduler import scheduler_loop
 from bot.webapp.server import create_webapp
 
@@ -61,7 +61,8 @@ async def setup_bot_commands(bot: Bot) -> None:
 
 def _acquire_single_instance_lock() -> Optional[object]:
     """Prevent multiple conflicting bot instances from running simultaneously."""
-    lock_dir = BASE_DIR / "data"
+    db_path = resolve_sqlite_db_path()
+    lock_dir = db_path.parent if db_path else (BASE_DIR / "data")
     lock_dir.mkdir(parents=True, exist_ok=True)
     lock_path = lock_dir / "bot.lock"
     lock_file = open(lock_path, "w", encoding="utf-8")
@@ -74,6 +75,28 @@ def _acquire_single_instance_lock() -> Optional[object]:
 
 
 async def main() -> None:
+    db_path = resolve_sqlite_db_path()
+    logger.info("Starting JnL-Bot...")
+    logger.info("Active database: %s", db_path or settings.database_url)
+    logger.info("Backup directory: %s", settings.backup_dir)
+    if settings.s3_backup_enabled:
+        logger.info(
+            "Cloud S3 backup: ENABLED (bucket: %s, retention: %d days)",
+            settings.s3_bucket_name,
+            settings.s3_retention_days,
+        )
+    else:
+        logger.info("Cloud S3 backup: DISABLED")
+
+    if Path("/var/lib/jnl-bot/data").exists() and db_path:
+        expected_db = Path("/var/lib/jnl-bot/data/finance_bot.db").resolve()
+        if db_path.resolve() != expected_db:
+            logger.warning(
+                "DATABASE_URL points to %s, but standard persistent path is %s.",
+                db_path,
+                expected_db,
+            )
+
     lock_handle = _acquire_single_instance_lock()
     if lock_handle is None:
         logger.error("Another instance of JnL-Bot is already running (bot.lock is held). Exiting.")

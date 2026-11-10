@@ -1,25 +1,32 @@
 #!/usr/bin/env bash
-# Safe, atomic GitHub auto-updater with pre-update backup, health verification, and automatic rollback.
-set -uo pipefail
+# Safe, atomic GitHub auto-updater with mandatory pre-update backup,
+# isolated-copy migration pre-flight, and backward-compatible rollback.
+set -euo pipefail
 
 INSTALL_DIR="/opt/jnl-bot"
 PERSISTENT_DATA_DIR="/var/lib/jnl-bot/data"
 BACKUP_DIR="/var/backups/jnl-bot"
 
 mkdir -p "$PERSISTENT_DATA_DIR" "$BACKUP_DIR"
-
-# Ensure physical separation of code (/opt/jnl-bot) and user data (/var/lib/jnl-bot/data)
-if [ -d "$INSTALL_DIR/data" ] && [ ! -L "$INSTALL_DIR/data" ]; then
-    if [ -f "$INSTALL_DIR/data/finance_bot.db" ] && [ ! -f "$PERSISTENT_DATA_DIR/finance_bot.db" ]; then
-        cp -a "$INSTALL_DIR/data/finance_bot.db"* "$PERSISTENT_DATA_DIR/" 2>/dev/null || true
-    fi
-    rm -rf "$INSTALL_DIR/data"
-    ln -s "$PERSISTENT_DATA_DIR" "$INSTALL_DIR/data"
-elif [ ! -e "$INSTALL_DIR/data" ]; then
-    ln -s "$PERSISTENT_DATA_DIR" "$INSTALL_DIR/data"
-fi
+chmod 700 "$PERSISTENT_DATA_DIR" "$BACKUP_DIR"
 
 cd "$INSTALL_DIR" || exit 1
+
+# Step 0: Ensure safe storage separation without risking unmigrated data
+if [ -d "$INSTALL_DIR/data" ] && [ ! -L "$INSTALL_DIR/data" ]; then
+    if [ -f "$INSTALL_DIR/data/finance_bot.db" ]; then
+        echo "[jnl-bot-updater] Found legacy in-repo database. Running verified storage migration..."
+        "$INSTALL_DIR/.venv/bin/python" -m bot.services.storage_migration \
+            --source "$INSTALL_DIR/data/finance_bot.db" \
+            --target "$PERSISTENT_DATA_DIR/finance_bot.db" \
+            --backup-dir "$BACKUP_DIR"
+        TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+        mv "$INSTALL_DIR/data" "$INSTALL_DIR/data_legacy_archived_${TIMESTAMP}"
+    fi
+    ln -sfn "$PERSISTENT_DATA_DIR" "$INSTALL_DIR/data"
+elif [ ! -e "$INSTALL_DIR/data" ]; then
+    ln -sfn "$PERSISTENT_DATA_DIR" "$INSTALL_DIR/data"
+fi
 
 git fetch origin main --quiet || exit 0
 
@@ -30,49 +37,64 @@ if [ "$LOCAL_HASH" = "$REMOTE_HASH" ]; then
     exit 0
 fi
 
-echo "[jnl-bot-updater] Update detected ($LOCAL_HASH -> $REMOTE_HASH). Starting safe update sequence..."
+echo "[jnl-bot-updater] New version detected ($LOCAL_HASH -> $REMOTE_HASH). Initiating safe update sequence..."
 PREV_HASH="$LOCAL_HASH"
 
-# Step 1: Create verified backup before updating code
-"$INSTALL_DIR/.venv/bin/python" -c "from bot.services.backup import create_database_backup; create_database_backup(tag='pre_update')" || true
+# Step 1: Mandatory verified pre-update backup.
+# If backup fails or verification fails, the update MUST be completely aborted.
+echo "[jnl-bot-updater] Step 1/7: Running mandatory pre-update backup..."
+if ! "$INSTALL_DIR/.venv/bin/python" -m bot.services.backup --pre-update; then
+    echo "[jnl-bot-updater] FATAL: Pre-update backup failed or could not be verified! Update aborted to protect database."
+    exit 1
+fi
 
 rollback() {
-    echo "[jnl-bot-updater] ERROR detected during update! Rolling back code to $PREV_HASH..."
+    echo "[jnl-bot-updater] ⚠️ ERROR occurred during update! Rolling back code to $PREV_HASH..."
     cd "$INSTALL_DIR"
     git reset --hard "$PREV_HASH"
     ln -sfn "$PERSISTENT_DATA_DIR" "$INSTALL_DIR/data"
-    systemctl restart jnl-bot.service
-    echo "[jnl-bot-updater] Rollback complete. User database was not affected."
+    "$INSTALL_DIR/.venv/bin/pip" install --quiet -r "$INSTALL_DIR/requirements.txt" || true
+    systemctl restart jnl-bot.service || true
+    echo "[jnl-bot-updater] Rollback complete. Live user database preserved without data loss."
     exit 1
 }
 
-# Step 2: Pull new code and preserve data symlink
+# Step 2: Pre-flight migration test on an ISOLATED COPY before touching live code or database
+echo "[jnl-bot-updater] Step 2/7: Pre-flight migration validation on isolated database copy..."
+"$INSTALL_DIR/.venv/bin/python" -m bot.database.migrations --test-isolated || {
+    echo "[jnl-bot-updater] Pre-flight migration test failed on isolated copy. Aborting update."
+    exit 1
+}
+
+# Step 3: Pull updated application code
+echo "[jnl-bot-updater] Step 3/7: Pulling code commit $REMOTE_HASH..."
 git reset --hard origin/main || rollback
 ln -sfn "$PERSISTENT_DATA_DIR" "$INSTALL_DIR/data"
 chmod +x "$INSTALL_DIR/deploy/"*.sh 2>/dev/null || true
 
-# Step 3: Update dependencies
+# Step 4: Update Python virtual environment dependencies
+echo "[jnl-bot-updater] Step 4/7: Updating dependencies..."
 "$INSTALL_DIR/.venv/bin/pip" install --quiet -r "$INSTALL_DIR/requirements.txt" || rollback
 
-# Step 4: Verify configuration, database accessibility, and run safe migrations
-"$INSTALL_DIR/.venv/bin/python" -c "
-import asyncio
-from bot.database.session import init_db, dispose_db
-async def _check():
-    await init_db()
-    await dispose_db()
-asyncio.run(_check())
-" || rollback
+# Step 5: Test new migrations on isolated copy using newly installed code
+echo "[jnl-bot-updater] Step 5/7: Testing new migrations on isolated copy..."
+"$INSTALL_DIR/.venv/bin/python" -m bot.database.migrations --test-isolated || rollback
 
-# Step 5: Run automated verification tests
+# Step 6: Apply backward-compatible migrations to live database
+echo "[jnl-bot-updater] Step 6/7: Applying migrations to live database..."
+"$INSTALL_DIR/.venv/bin/python" -m bot.database.migrations --apply || rollback
+
+# Step 7: Run automated test suite
+echo "[jnl-bot-updater] Step 7/7: Executing test suite..."
 "$INSTALL_DIR/.venv/bin/python" -m unittest discover -s "$INSTALL_DIR/tests" || rollback
 
-# Step 6: Restart service and verify health
+# Step 8: Restart service and verify health
 systemctl restart jnl-bot.service || rollback
 sleep 3
 
 if ! systemctl is-active --quiet jnl-bot.service; then
+    echo "[jnl-bot-updater] Service failed to activate after update. Triggering rollback..."
     rollback
 fi
 
-echo "[jnl-bot-updater] Successfully updated to $REMOTE_HASH and verified service health."
+echo "[jnl-bot-updater] ✅ Update successful! JnL-Bot updated to $REMOTE_HASH and running normally."

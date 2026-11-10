@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Safe, isolated installer for JnL-Bot on Ubuntu VPS (HestiaCP / Nginx safe)
 # Physically separates code (/opt/jnl-bot), database (/var/lib/jnl-bot/data), and backups (/var/backups/jnl-bot).
-set -e
+set -euo pipefail
 
 INSTALL_DIR="/opt/jnl-bot"
 PERSISTENT_DATA_DIR="/var/lib/jnl-bot/data"
@@ -19,10 +19,30 @@ if ! python3 -c "import ensurepip" >/dev/null 2>&1 || ! command -v git >/dev/nul
     apt-get install -y python3-venv python3-pip git
 fi
 
-# Preserve any existing database in /opt/jnl-bot/data before git operations
+# Step 1.1: If an unmigrated database exists in /opt/jnl-bot/data, safely migrate it using SQLite online backup
 if [ -d "$INSTALL_DIR/data" ] && [ ! -L "$INSTALL_DIR/data" ]; then
-    if [ -f "$INSTALL_DIR/data/finance_bot.db" ] && [ ! -f "$PERSISTENT_DATA_DIR/finance_bot.db" ]; then
-        cp -a "$INSTALL_DIR/data/finance_bot.db"* "$PERSISTENT_DATA_DIR/" 2>/dev/null || true
+    if [ -f "$INSTALL_DIR/data/finance_bot.db" ]; then
+        echo "==> Detected legacy in-repo database. Running verified storage migration..."
+        if [ -x "$INSTALL_DIR/.venv/bin/python" ]; then
+            "$INSTALL_DIR/.venv/bin/python" -m bot.services.storage_migration \
+                --source "$INSTALL_DIR/data/finance_bot.db" \
+                --target "$PERSISTENT_DATA_DIR/finance_bot.db" \
+                --backup-dir "$BACKUP_DIR"
+        else
+            python3 -c "
+import sqlite3, shutil, os
+src = '$INSTALL_DIR/data/finance_bot.db'
+tgt = '$PERSISTENT_DATA_DIR/finance_bot.db'
+if not os.path.exists(tgt) or os.path.getsize(tgt) == 0:
+    s = sqlite3.connect(f'file:{src}?mode=ro', uri=True)
+    d = sqlite3.connect(tgt)
+    with d: s.backup(d)
+    d.close(); s.close()
+"
+        fi
+        # Archive old directory, never delete it
+        TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+        mv "$INSTALL_DIR/data" "$INSTALL_DIR/data_legacy_archived_${TIMESTAMP}"
     fi
 fi
 
@@ -35,7 +55,7 @@ fi
 
 echo "==> [2/5] Cloning / updating repository in $INSTALL_DIR..."
 if [ ! -d "$INSTALL_DIR/.git" ]; then
-    rm -rf "$INSTALL_DIR"
+    mkdir -p "$INSTALL_DIR"
     git clone "$REPO_URL" "$INSTALL_DIR"
 else
     cd "$INSTALL_DIR"
@@ -48,16 +68,16 @@ if [ -n "$TMP_ENV" ] && [ -f "$TMP_ENV" ]; then
     rm -f "$TMP_ENV"
 fi
 
-# Link /opt/jnl-bot/data -> /var/lib/jnl-bot/data so data is stored outside the repo
-rm -rf "$INSTALL_DIR/data"
-ln -s "$PERSISTENT_DATA_DIR" "$INSTALL_DIR/data"
+# Link /opt/jnl-bot/data -> /var/lib/jnl-bot/data so data is permanently external to git
+ln -sfn "$PERSISTENT_DATA_DIR" "$INSTALL_DIR/data"
 
 cd "$INSTALL_DIR"
 chmod +x "$INSTALL_DIR/deploy/"*.sh
 
 echo "==> [3/5] Creating isolated virtual environment (.venv) and installing packages..."
-rm -rf "$INSTALL_DIR/.venv"
-python3 -m venv "$INSTALL_DIR/.venv"
+if [ ! -d "$INSTALL_DIR/.venv" ]; then
+    python3 -m venv "$INSTALL_DIR/.venv"
+fi
 "$INSTALL_DIR/.venv/bin/pip" install --upgrade pip -q
 "$INSTALL_DIR/.venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt" -q
 
@@ -70,14 +90,26 @@ BACKUP_DIR=$BACKUP_DIR
 WEBAPP_HOST=127.0.0.1
 WEBAPP_PORT=0
 WEBAPP_URL=
+S3_BACKUP_ENABLED=false
+S3_ENDPOINT_URL=
+S3_ACCESS_KEY_ID=
+S3_SECRET_ACCESS_KEY=
+S3_BUCKET_NAME=
+S3_REGION_NAME=us-east-1
+S3_ENCRYPTION_KEY=
+S3_RETENTION_DAYS=30
 EOF
     chmod 600 "$INSTALL_DIR/.env"
-    echo "    .env configured with provided BOT_TOKEN and persistent storage path."
+    echo "    .env configured with provided BOT_TOKEN and persistent storage paths."
 elif [ ! -f "$INSTALL_DIR/.env" ]; then
     cp "$INSTALL_DIR/.env.example" "$INSTALL_DIR/.env"
     chmod 600 "$INSTALL_DIR/.env"
     echo "    Created template $INSTALL_DIR/.env (remember to set BOT_TOKEN)."
 fi
+
+# Run pre-flight SQLite diagnostic check
+echo "==> Checking SQLite runtime version and WAL mode..."
+"$INSTALL_DIR/.venv/bin/python" -m bot.database.check_sqlite || true
 
 echo "==> [5/5] Enabling 24/7 systemd service + GitHub auto-updater timer..."
 cp "$INSTALL_DIR/deploy/jnl-bot.service" /etc/systemd/system/jnl-bot.service
