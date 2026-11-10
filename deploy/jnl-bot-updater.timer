@@ -1,0 +1,10 @@
+[Unit]
+Description=Check GitHub every 60s for JnL-Bot updates
+
+[Timer]
+OnBootSec=45s
+OnUnitActiveSec=60s
+Unit=jnl-bot-updater.service
+
+[Install]
+WantedBy=timers.target
