@@ -12,11 +12,17 @@ __pycache__/
 # Environment variables
 .env
 
-# Database
+# Database & Backups
 *.db
 *.sqlite
 *.sqlite3
+*.enc
+*.lock
+*.flag
 data/
+backups/
+monitoring_state.json
+
 
 # OS / IDE
 .DS_Store

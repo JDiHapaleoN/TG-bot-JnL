@@ -84,9 +84,14 @@ class Settings:
     s3_region_name: str
     s3_encryption_key: str
     s3_retention_days: int
+    s3_pbkdf2_iterations: int
+    admin_telegram_id: Optional[int]
 
 
 def get_settings() -> Settings:
+    admin_raw = os.getenv("ADMIN_TELEGRAM_ID", "").strip()
+    admin_id = int(admin_raw) if admin_raw.isdigit() else None
+
     return Settings(
         bot_token=os.getenv("BOT_TOKEN", "").strip(),
         database_url=_default_database_url(),
@@ -103,6 +108,8 @@ def get_settings() -> Settings:
         s3_region_name=os.getenv("S3_REGION_NAME", "us-east-1").strip(),
         s3_encryption_key=os.getenv("S3_ENCRYPTION_KEY", "").strip(),
         s3_retention_days=int(os.getenv("S3_RETENTION_DAYS", "30")),
+        s3_pbkdf2_iterations=int(os.getenv("S3_PBKDF2_ITERATIONS", "600000")),
+        admin_telegram_id=admin_id,
     )
 
 

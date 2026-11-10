@@ -29,7 +29,10 @@ from bot.services.backup import (
 logger = logging.getLogger("cloud_backup")
 
 
-def _derive_encryption_key(passphrase: str, salt: bytes) -> bytes:
+MAGIC_HEADER = b"JNL-ENC1"  # exactly 8 bytes
+
+
+def _derive_encryption_key(passphrase: str, salt: bytes, iterations: int = 600_000) -> bytes:
     """Derive a 256-bit AES key from passphrase and salt using PBKDF2-HMAC-SHA256."""
     from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
     from cryptography.hazmat.primitives import hashes
@@ -38,23 +41,34 @@ def _derive_encryption_key(passphrase: str, salt: bytes) -> bytes:
         algorithm=hashes.SHA256(),
         length=32,
         salt=salt,
-        iterations=100_000,
+        iterations=iterations,
     )
     return kdf.derive(passphrase.encode("utf-8"))
 
 
-def encrypt_file(source_path: Path, output_path: Path, passphrase: str) -> None:
+def encrypt_file(source_path: Path, output_path: Path, passphrase: str, iterations: Optional[int] = None) -> None:
     """
-    Encrypt file using AES-256-GCM.
-    Binary layout: [16-byte salt][12-byte nonce][ciphertext + 16-byte auth tag].
+    Encrypt file using AES-256-GCM with PBKDF2-HMAC-SHA256 key derivation.
+    Binary layout:
+      [8 bytes magic: JNL-ENC1]
+      [4 bytes big-endian: iterations]
+      [16 bytes: salt]
+      [12 bytes: nonce]
+      [ciphertext + 16 bytes auth tag]
     """
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
     if not passphrase:
         raise ValueError("S3_ENCRYPTION_KEY / passphrase is required for client-side encryption")
 
+    raw_iters = iterations or getattr(settings, "s3_pbkdf2_iterations", 600_000)
+    try:
+        iters = int(raw_iters)
+    except (TypeError, ValueError):
+        iters = 600_000
+
     salt = os.urandom(16)
-    key = _derive_encryption_key(passphrase, salt)
+    key = _derive_encryption_key(passphrase, salt, iterations=iters)
     nonce = os.urandom(12)
     aesgcm = AESGCM(key)
 
@@ -63,6 +77,8 @@ def encrypt_file(source_path: Path, output_path: Path, passphrase: str) -> None:
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "wb") as f:
+        f.write(MAGIC_HEADER)
+        f.write(iters.to_bytes(4, byteorder="big"))
         f.write(salt)
         f.write(nonce)
         f.write(ciphertext)
@@ -71,6 +87,8 @@ def encrypt_file(source_path: Path, output_path: Path, passphrase: str) -> None:
 def decrypt_file(encrypted_path: Path, output_path: Path, passphrase: str) -> None:
     """
     Decrypt AES-256-GCM encrypted file and verify authentication tag.
+    Supports both Version 1 (with self-describing header & iterations)
+    and Legacy Version 0 (raw salt + nonce + 100k iterations) for 100% backward compatibility.
     """
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
@@ -78,14 +96,28 @@ def decrypt_file(encrypted_path: Path, output_path: Path, passphrase: str) -> No
         raise ValueError("S3_ENCRYPTION_KEY / passphrase is required for decryption")
 
     raw = encrypted_path.read_bytes()
-    if len(raw) < 44:  # 16 salt + 12 nonce + 16 tag minimum
-        raise ValueError(f"Encrypted file is too short: {len(raw)} bytes")
+    magic_len = len(MAGIC_HEADER)
 
-    salt = raw[:16]
-    nonce = raw[16:28]
-    ciphertext = raw[28:]
+    if raw.startswith(MAGIC_HEADER):
+        if len(raw) < magic_len + 4 + 16 + 12 + 16:
+            raise ValueError(f"Encrypted file is too short: {len(raw)} bytes")
+        iters = int.from_bytes(raw[magic_len:magic_len + 4], byteorder="big")
+        pos = magic_len + 4
+        salt = raw[pos:pos + 16]
+        pos += 16
+        nonce = raw[pos:pos + 12]
+        pos += 12
+        ciphertext = raw[pos:]
+    else:
+        # Legacy Version 0 format: 16 salt + 12 nonce = 28 bytes header, 100,000 iterations
+        if len(raw) < 44:
+            raise ValueError(f"Encrypted file is too short: {len(raw)} bytes")
+        iters = 100_000
+        salt = raw[:16]
+        nonce = raw[16:28]
+        ciphertext = raw[28:]
 
-    key = _derive_encryption_key(passphrase, salt)
+    key = _derive_encryption_key(passphrase, salt, iterations=iters)
     aesgcm = AESGCM(key)
     try:
         decrypted_data = aesgcm.decrypt(nonce, ciphertext, None)
@@ -346,3 +378,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

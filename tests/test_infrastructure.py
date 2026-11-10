@@ -22,7 +22,7 @@ import unittest
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -405,7 +405,7 @@ class InfrastructureReliabilitySuite(unittest.IsolatedAsyncioTestCase):
             # 2. Test AES-256-GCM encryption & decryption
             enc_file = tmp / "backup.enc"
             dec_file = tmp / "decrypted.db"
-            encrypt_file(meta.backup_path, enc_file, passphrase)
+            encrypt_file(meta.backup_path, enc_file, passphrase, iterations=1000)
 
             # Encrypted file is not valid SQLite
             with self.assertRaises(sqlite3.DatabaseError):
@@ -457,6 +457,7 @@ class InfrastructureReliabilitySuite(unittest.IsolatedAsyncioTestCase):
                 mock_settings.s3_endpoint_url = ""
                 mock_settings.s3_access_key_id = "test-key"
                 mock_settings.s3_secret_access_key = "test-secret"
+                mock_settings.s3_pbkdf2_iterations = 1000
 
                 # Upload to S3
                 with patch("bot.services.cloud_backup._get_s3_client", return_value=s3_mock):
@@ -505,6 +506,130 @@ class InfrastructureReliabilitySuite(unittest.IsolatedAsyncioTestCase):
             # Concurrent stress test under WAL
             ok = await run_concurrency_stress_test(db_path, writers_count=10, reads_count=20)
             self.assertTrue(ok)
+
+    async def test_11_monitoring_system_probes_and_alerts(self) -> None:
+        """
+        Тест 11: Проверка работы мониторинга, проверки диска, SQLite и отправки алертов админу.
+        """
+        from bot.services.monitoring import (
+            check_disk_space,
+            check_sqlite_health,
+            load_monitoring_state,
+            record_backup_failure,
+            record_cloud_backup_success,
+            record_local_backup_success,
+            run_system_health_check,
+            send_admin_alert,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            test_db = Path(tmpdir) / "mon_test.db"
+            eng = _make_engine(test_db)
+            await init_db(eng)
+            await eng.dispose()
+
+            # 1. Probe disk space
+            disk = check_disk_space(Path(tmpdir))
+            self.assertIn("free_gb", disk)
+            self.assertIn("total_gb", disk)
+            self.assertIn("free_pct", disk)
+
+            # 2. Probe SQLite health
+            sql = check_sqlite_health(test_db)
+            self.assertTrue(sql["accessible"])
+            self.assertTrue(sql["is_healthy"])
+            self.assertEqual(sql["integrity"], "ok")
+
+            # 3. State recording
+            record_local_backup_success("test_backup.db")
+            record_cloud_backup_success("backups/test_backup.db.enc")
+            state = load_monitoring_state()
+            self.assertEqual(state.last_local_backup_file, "test_backup.db")
+            self.assertEqual(state.last_cloud_backup_key, "backups/test_backup.db.enc")
+            self.assertEqual(state.consecutive_backup_failures, 0)
+
+            record_backup_failure("S3 bucket access denied")
+            state2 = load_monitoring_state()
+            self.assertEqual(state2.consecutive_backup_failures, 1)
+
+            # 4. Telegram admin alert dispatch & cooldown
+            mock_bot = MagicMock()
+            mock_bot.send_message = AsyncMock(return_value=True)
+
+            with patch("bot.services.monitoring.settings") as mon_settings:
+                mon_settings.admin_telegram_id = 123456789
+                mon_settings.backup_dir = Path(tmpdir)
+
+                # First alert dispatches
+                sent1 = await send_admin_alert(
+                    mock_bot,
+                    alert_key="unit_alert_test",
+                    title="Test Alert",
+                    details="Disk warning test",
+                    force=False,
+                )
+                self.assertTrue(sent1)
+                mock_bot.send_message.assert_awaited_once()
+
+                # Second identical alert within cooldown period is suppressed
+                mock_bot.send_message.reset_mock()
+                sent2 = await send_admin_alert(
+                    mock_bot,
+                    alert_key="unit_alert_test",
+                    title="Test Alert",
+                    details="Disk warning test",
+                    force=False,
+                )
+                self.assertFalse(sent2)
+                mock_bot.send_message.assert_not_awaited()
+
+    async def test_12_encryption_backward_compatibility(self) -> None:
+        """
+        Тест 12: Обратная совместимость шифрования бэкапов:
+        - Version 1 (с заголовком JNLENC\x01 и 600,000 итерациями)
+        - Version 0 (legacy без заголовка и 100,000 итерациями)
+        - Проверка успешной расшифровки обоих форматов
+        """
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        from bot.services.cloud_backup import _derive_encryption_key, MAGIC_HEADER
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            passphrase = "BackwardCompatibilitySecretKey2026!"
+            payload = b"SQLITE_DATABASE_BINARY_PAYLOAD_ABC123"
+
+            plain_src = tmp / "plain.db"
+            plain_src.write_bytes(payload)
+
+            # 1. Create Version 1 encrypted file (new format)
+            enc_v1 = tmp / "backup_v1.enc"
+            dec_v1 = tmp / "decrypted_v1.db"
+            encrypt_file(plain_src, enc_v1, passphrase, iterations=1000)
+
+            # Verify it starts with magic header
+            self.assertTrue(enc_v1.read_bytes().startswith(MAGIC_HEADER))
+            decrypt_file(enc_v1, dec_v1, passphrase)
+            self.assertEqual(dec_v1.read_bytes(), payload)
+
+            # 2. Create raw Version 0 encrypted file (legacy format without magic header, 100k iterations)
+            enc_v0 = tmp / "backup_v0.enc"
+            dec_v0 = tmp / "decrypted_v0.db"
+            salt_v0 = os.urandom(16)
+            key_v0 = _derive_encryption_key(passphrase, salt_v0, iterations=100_000)
+            nonce_v0 = os.urandom(12)
+            aesgcm = AESGCM(key_v0)
+            ct_v0 = aesgcm.encrypt(nonce_v0, payload, None)
+            with open(enc_v0, "wb") as f:
+                f.write(salt_v0)
+                f.write(nonce_v0)
+                f.write(ct_v0)
+
+            # Verify Version 0 does NOT have the magic header
+            self.assertFalse(enc_v0.read_bytes().startswith(MAGIC_HEADER))
+
+            # Decrypt Version 0 using our unified decrypt_file
+            decrypt_file(enc_v0, dec_v0, passphrase)
+            self.assertEqual(dec_v0.read_bytes(), payload)
 
 
 if __name__ == "__main__":

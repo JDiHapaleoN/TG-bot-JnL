@@ -40,6 +40,10 @@ class SecretRedactingFilter(logging.Filter):
 def _redact_text(text: str) -> str:
     if settings.bot_token and settings.bot_token in text:
         text = text.replace(settings.bot_token, "***REDACTED_TOKEN***")
+    if settings.s3_encryption_key and len(settings.s3_encryption_key) >= 6 and settings.s3_encryption_key in text:
+        text = text.replace(settings.s3_encryption_key, "***REDACTED_KEY***")
+    if settings.s3_secret_access_key and len(settings.s3_secret_access_key) >= 6 and settings.s3_secret_access_key in text:
+        text = text.replace(settings.s3_secret_access_key, "***REDACTED_SECRET***")
     return _TOKEN_PATTERN.sub("***REDACTED_TOKEN***", text)
 
 

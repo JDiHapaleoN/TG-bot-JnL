@@ -171,15 +171,31 @@ def create_database_backup(
         meta.sha256[:12],
     )
 
+    try:
+        from bot.services.monitoring import (
+            record_backup_failure,
+            record_cloud_backup_success,
+            record_local_backup_success,
+        )
+        record_local_backup_success(backup_file.name)
+    except Exception:
+        pass
+
     _prune_old_backups(target_dir, max_backups=max_backups)
 
     # Step 3: Independent Cloud Backup (S3)
     if upload_s3 and settings.s3_backup_enabled:
         try:
             from bot.services.cloud_backup import upload_encrypted_backup_to_s3
-            upload_encrypted_backup_to_s3(backup_file, meta)
+            s3_key = upload_encrypted_backup_to_s3(backup_file, meta)
+            if s3_key:
+                record_cloud_backup_success(s3_key)
         except Exception as cloud_err:
             logger.warning("Cloud S3 backup upload skipped or failed: %s", cloud_err)
+            try:
+                record_backup_failure(f"Cloud backup failed: {cloud_err}")
+            except Exception:
+                pass
 
     return meta
 

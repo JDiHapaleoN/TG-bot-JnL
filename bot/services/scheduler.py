@@ -18,6 +18,7 @@ from bot.database.session import async_session_factory
 from bot.i18n.translations import t
 from bot.services.backup import create_database_backup
 from bot.services.currencies import format_money
+from bot.services.monitoring import run_system_health_check
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,14 @@ async def scheduler_loop(bot: Optional[Bot] = None, interval_seconds: int = 60) 
         try:
             await run_scheduler_tick(bot=bot)
             tick_count += 1
+
+            # Run system health and disk space probes every 15 minutes (15 ticks at 60s)
+            if tick_count % 15 == 0:
+                try:
+                    await run_system_health_check(bot=bot)
+                except Exception as health_err:
+                    logger.warning("Periodic health check warning: %s", health_err)
+
             # Create a verified backup every 6 hours (360 ticks at 60s interval)
             if tick_count % 360 == 0:
                 create_database_backup(tag="periodic")

@@ -1,7 +1,15 @@
 """Async SQLAlchemy engine, WAL durability settings, and safe initialization."""
 
 import logging
+import sys
 from typing import Optional
+
+# Transparently upgrade SQLite C-runtime to modern build if pysqlite3-binary is available
+try:
+    import pysqlite3
+    sys.modules["sqlite3"] = pysqlite3
+except ImportError:
+    pass
 
 from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import (

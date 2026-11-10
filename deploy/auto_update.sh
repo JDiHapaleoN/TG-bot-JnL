@@ -50,6 +50,7 @@ fi
 
 rollback() {
     echo "[jnl-bot-updater] ⚠️ ERROR occurred during update! Rolling back code to $PREV_HASH..."
+    echo "Update from $PREV_HASH to $REMOTE_HASH failed at $(date -u)" > "$PERSISTENT_DATA_DIR/update_failed.flag" 2>/dev/null || true
     cd "$INSTALL_DIR"
     git reset --hard "$PREV_HASH"
     ln -sfn "$PERSISTENT_DATA_DIR" "$INSTALL_DIR/data"
@@ -97,4 +98,5 @@ if ! systemctl is-active --quiet jnl-bot.service; then
     rollback
 fi
 
+rm -f "$PERSISTENT_DATA_DIR/update_failed.flag" 2>/dev/null || true
 echo "[jnl-bot-updater] ✅ Update successful! JnL-Bot updated to $REMOTE_HASH and running normally."
