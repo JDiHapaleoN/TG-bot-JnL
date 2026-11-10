@@ -19,3 +19,4 @@ if [ "$LOCAL_HASH" != "$REMOTE_HASH" ]; then
     systemctl restart jnl-bot.service
     echo "[jnl-bot-updater] Update applied and jnl-bot.service restarted successfully."
 fi
+

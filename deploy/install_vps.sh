@@ -7,8 +7,9 @@ INSTALL_DIR="/opt/jnl-bot"
 REPO_URL="https://github.com/JDiHapaleoN/TG-bot-JnL.git"
 TOKEN_ARG="${1:-}"
 
-echo "==> [1/5] Checking Python 3 venv and git..."
-if ! python3 -m venv --help >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1; then
+echo "==> [1/5] Checking python3-venv (ensurepip) and git..."
+if ! python3 -c "import ensurepip" >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1; then
+    export DEBIAN_FRONTEND=noninteractive
     apt-get update -y
     apt-get install -y python3-venv python3-pip git
 fi
@@ -27,9 +28,10 @@ cd "$INSTALL_DIR"
 chmod +x "$INSTALL_DIR/deploy/"*.sh
 
 echo "==> [3/5] Creating isolated virtual environment (.venv) and installing packages..."
-python3 -m venv .venv
-.venv/bin/pip install --upgrade pip -q
-.venv/bin/pip install -r requirements.txt -q
+rm -rf "$INSTALL_DIR/.venv"
+python3 -m venv "$INSTALL_DIR/.venv"
+"$INSTALL_DIR/.venv/bin/pip" install --upgrade pip -q
+"$INSTALL_DIR/.venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt" -q
 
 echo "==> [4/5] Configuring .env..."
 if [ -n "$TOKEN_ARG" ]; then
@@ -55,6 +57,7 @@ cp "$INSTALL_DIR/deploy/jnl-bot-updater.timer" /etc/systemd/system/jnl-bot-updat
 
 systemctl daemon-reload
 systemctl enable --now jnl-bot.service
+systemctl restart jnl-bot.service
 systemctl enable --now jnl-bot-updater.timer
 
 echo ""

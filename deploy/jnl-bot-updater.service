@@ -9,3 +9,4 @@ WorkingDirectory=/opt/jnl-bot
 ExecStart=/opt/jnl-bot/deploy/auto_update.sh
 StandardOutput=journal
 StandardError=journal
+

@@ -8,3 +8,4 @@ Unit=jnl-bot-updater.service
 
 [Install]
 WantedBy=timers.target
+

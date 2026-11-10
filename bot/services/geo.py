@@ -118,6 +118,58 @@ TIMEZONE_TO_COUNTRY: Dict[str, str] = {
     "Asia/Jerusalem": "IL",
 }
 
+# Regional city hubs (lat, lon, country_code, timezone) for fast zero-dependency offline lookup
+OFFLINE_GEO_HUBS: List[Tuple[float, float, str, str]] = [
+    (52.52, 13.40, "DE", "Europe/Berlin"),
+    (51.48, 11.97, "DE", "Europe/Berlin"),  # Halle / Leipzig
+    (48.14, 11.58, "DE", "Europe/Berlin"),  # Munich
+    (50.11, 8.68, "DE", "Europe/Berlin"),   # Frankfurt
+    (53.55, 9.99, "DE", "Europe/Berlin"),   # Hamburg
+    (41.30, 69.24, "UZ", "Asia/Tashkent"),
+    (39.65, 66.96, "UZ", "Asia/Samarkand"),
+    (55.75, 37.62, "RU", "Europe/Moscow"),
+    (59.93, 30.34, "RU", "Europe/Moscow"),
+    (56.84, 60.60, "RU", "Asia/Yekaterinburg"),
+    (55.01, 82.93, "RU", "Asia/Novosibirsk"),
+    (43.12, 131.89, "RU", "Asia/Vladivostok"),
+    (43.22, 76.85, "KZ", "Asia/Almaty"),
+    (51.17, 71.45, "KZ", "Asia/Almaty"),
+    (40.71, -74.01, "US", "America/New_York"),
+    (41.88, -87.63, "US", "America/Chicago"),
+    (39.74, -104.99, "US", "America/Denver"),
+    (34.05, -118.24, "US", "America/Los_Angeles"),
+    (51.51, -0.13, "GB", "Europe/London"),
+    (47.37, 8.54, "CH", "Europe/Zurich"),
+    (41.01, 28.98, "TR", "Europe/Istanbul"),
+    (36.89, 30.71, "TR", "Europe/Istanbul"),
+    (31.23, 121.47, "CN", "Asia/Shanghai"),
+    (39.90, 116.41, "CN", "Asia/Shanghai"),
+    (35.68, 139.65, "JP", "Asia/Tokyo"),
+    (50.45, 30.52, "UA", "Europe/Kyiv"),
+    (53.90, 27.57, "BY", "Europe/Minsk"),
+    (52.23, 21.01, "PL", "Europe/Warsaw"),
+    (48.86, 2.35, "FR", "Europe/Paris"),
+    (41.90, 12.50, "IT", "Europe/Rome"),
+    (40.42, -3.70, "ES", "Europe/Madrid"),
+    (52.37, 4.90, "NL", "Europe/Amsterdam"),
+    (48.21, 16.37, "AT", "Europe/Vienna"),
+    (50.08, 14.44, "CZ", "Europe/Prague"),
+    (25.20, 55.27, "AE", "Asia/Dubai"),
+    (41.72, 44.83, "GE", "Asia/Tbilisi"),
+    (40.18, 44.51, "AM", "Asia/Yerevan"),
+    (40.41, 49.87, "AZ", "Asia/Baku"),
+    (42.87, 74.59, "KG", "Asia/Bishkek"),
+    (38.56, 68.77, "TJ", "Asia/Dushanbe"),
+    (43.65, -79.38, "CA", "America/Toronto"),
+    (49.28, -123.12, "CA", "America/Vancouver"),
+    (-33.87, 151.21, "AU", "Australia/Sydney"),
+    (28.61, 77.21, "IN", "Asia/Kolkata"),
+    (37.57, 126.98, "KR", "Asia/Seoul"),
+    (1.35, 103.82, "SG", "Asia/Singapore"),
+    (13.76, 100.50, "TH", "Asia/Bangkok"),
+    (31.77, 35.21, "IL", "Asia/Jerusalem"),
+]
+
 POPULAR_TIMEZONES: List[str] = [
     "Europe/Berlin",
     "Europe/London",
@@ -152,7 +204,7 @@ def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 def resolve_location_offline(latitude: float, longitude: float) -> Tuple[CountryProfile, str]:
     """
     Determine CountryProfile and IANA timezone from GPS coordinates completely offline.
-    Uses timezonefinder if installed, and falls back to nearest-country hub resolution.
+    Uses timezonefinder if installed, and falls back to nearest regional hub resolution.
     """
     tz_name: Optional[str] = None
     if _tf is not None:
@@ -166,16 +218,19 @@ def resolve_location_offline(latitude: float, longitude: float) -> Tuple[Country
         profile = COUNTRIES[c_code]
         return profile, tz_name
 
-    # Nearest country hub fallback
-    best_profile = COUNTRIES["DE"]
+    # Nearest regional hub fallback
+    best_code = "DE"
+    best_tz = "Europe/Berlin"
     best_dist = float("inf")
-    for profile in COUNTRIES.values():
-        dist = _haversine_km(latitude, longitude, profile.lat, profile.lon)
+    for h_lat, h_lon, c_code, h_tz in OFFLINE_GEO_HUBS:
+        dist = _haversine_km(latitude, longitude, h_lat, h_lon)
         if dist < best_dist:
             best_dist = dist
-            best_profile = profile
+            best_code = c_code
+            best_tz = h_tz
 
-    resolved_tz = tz_name if (tz_name and is_valid_timezone(tz_name)) else best_profile.default_timezone
+    best_profile = COUNTRIES.get(best_code, COUNTRIES["DE"])
+    resolved_tz = tz_name if (tz_name and is_valid_timezone(tz_name)) else best_tz
     return best_profile, resolved_tz
 
 
@@ -214,4 +269,3 @@ def format_timezone_with_offset(tz_name: str) -> str:
         return f"{tz_name} ({offset_fmt})"
     except Exception:
         return tz_name
-
