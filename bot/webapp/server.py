@@ -1,4 +1,4 @@
-"""aiohttp server providing the Telegram Mini App (WebApp) UI and REST API."""
+"""aiohttp server providing the Telegram Mini App (WebApp) UI and authenticated REST API."""
 
 import csv
 import hashlib
@@ -16,13 +16,11 @@ from aiohttp import web
 from bot.config import settings
 from bot.database.crud import (
     add_transaction,
-    advance_date,
     create_or_update_user,
     create_recurring_transaction,
     delete_recurring_transaction,
     delete_transaction,
     delete_user_account,
-    get_all_registered_users,
     get_recurring_by_id,
     get_user_by_telegram_id,
     get_user_recurring_transactions,
@@ -69,34 +67,33 @@ def verify_telegram_init_data(init_data: str, bot_token: str) -> Optional[int]:
 
 
 async def _resolve_user(request: web.Request, session) -> User:
+    """
+    Authenticate and resolve the requesting Telegram user.
+    Never falls back to another user's profile and never seeds mock data in production.
+    """
     init_data = request.headers.get("X-Telegram-Init-Data", "")
     tg_id = verify_telegram_init_data(init_data, settings.bot_token)
 
-    if not tg_id:
+    if not tg_id and settings.allow_dev_webapp_auth:
         uid_param = request.query.get("uid") or request.headers.get("X-Telegram-User-Id")
         if uid_param and str(uid_param).isdigit():
             tg_id = int(uid_param)
 
-    if tg_id:
-        user = await get_user_by_telegram_id(session, tg_id)
-        if user:
-            return user
+    if not tg_id:
+        raise web.HTTPUnauthorized(
+            text=json.dumps({"error": "Unauthorized: valid Telegram WebApp initData required"}),
+            content_type="application/json",
+        )
 
-    # If no specific uid passed in browser preview, pick the first registered user
-    users = await get_all_registered_users(session)
-    if users and not tg_id:
-        return users[0]
+    user = await get_user_by_telegram_id(session, tg_id)
+    if user:
+        return user
 
-    demo_id = tg_id or 100001
-    existing_demo = await get_user_by_telegram_id(session, demo_id)
-    if existing_demo:
-        return existing_demo
-
-    user = await create_or_update_user(
+    return await create_or_update_user(
         session=session,
-        telegram_id=demo_id,
-        name="Alex",
-        phone="+49 170 1234567",
+        telegram_id=tg_id,
+        name="User",
+        phone=None,
         country_code="DE",
         country_name="Germany",
         currency="EUR",
@@ -104,26 +101,6 @@ async def _resolve_user(request: web.Request, session) -> User:
         language="ru",
         is_registered=True,
     )
-
-    # Seed initial demo transactions matching the specification screenshot (€1,245.50 balance)
-    if demo_id == 100001:
-        await add_transaction(session, user.id, "income", "2000.00", "EUR", "Зарплата")
-        await add_transaction(session, user.id, "expense", "724.50", "EUR", "Аренда квартиры и счета")
-        await add_transaction(session, user.id, "expense", "25.00", "EUR", "Продукты")
-        await add_transaction(session, user.id, "expense", "5.00", "EUR", "Обед в McDonald's")
-
-        next_month = advance_date(date.today().isoformat(), "monthly")
-        await create_recurring_transaction(
-            session, user.id, "Зарплата", "2000.00", "EUR", "income", "monthly", next_month
-        )
-        await create_recurring_transaction(
-            session, user.id, "Аренда квартиры", "650.00", "EUR", "expense", "monthly", next_month
-        )
-        await create_recurring_transaction(
-            session, user.id, "Интернет и подписки", "45.00", "EUR", "expense", "monthly", next_month
-        )
-
-    return user
 
 
 async def handle_index(request: web.Request) -> web.FileResponse:
@@ -149,6 +126,7 @@ async def handle_dashboard(request: web.Request) -> web.Response:
                     "amount": float(tx.amount),
                     "formatted_amount": format_money(tx.amount, tx.currency, tx_type=tx.tx_type),
                     "currency": tx.currency,
+                    "category": getattr(tx, "category", "other"),
                     "description": tx.description,
                     "date": dt_local.strftime("%d.%m.%Y"),
                     "time": dt_local.strftime("%H:%M"),
@@ -261,7 +239,7 @@ async def handle_add_tx(request: web.Request) -> web.Response:
             raw_amt = str(data.get("amount", "")).replace(",", ".").strip()
             try:
                 amount = Decimal(raw_amt).quantize(Decimal("0.01"))
-                if amount <= 0:
+                if amount <= 0 or amount > Decimal("999999999.99"):
                     raise ValueError()
             except Exception:
                 return web.json_response({"error": "Invalid amount"}, status=400)
@@ -299,14 +277,18 @@ async def handle_update_tx(request: web.Request) -> web.Response:
     data = await request.json()
     async with async_session_factory() as session:
         user = await _resolve_user(request, session)
-        tx = await update_transaction(
-            session,
-            tx_id=tx_id,
-            user_id=user.id,
-            amount=data.get("amount"),
-            description=data.get("description"),
-            tx_type=data.get("tx_type"),
-        )
+        try:
+            tx = await update_transaction(
+                session,
+                tx_id=tx_id,
+                user_id=user.id,
+                amount=data.get("amount"),
+                description=data.get("description"),
+                tx_type=data.get("tx_type"),
+                category=data.get("category"),
+            )
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
         if not tx:
             return web.json_response({"error": "Not found"}, status=404)
         return web.json_response({"ok": True})
@@ -336,7 +318,7 @@ async def handle_add_recurring(request: web.Request) -> web.Response:
             return web.json_response({"error": "Title required"}, status=400)
         try:
             amt = Decimal(raw_amt).quantize(Decimal("0.01"))
-            if amt <= 0:
+            if amt <= 0 or amt > Decimal("999999999.99"):
                 raise ValueError()
         except Exception:
             return web.json_response({"error": "Invalid amount"}, status=400)
@@ -367,7 +349,10 @@ async def handle_update_recurring(request: web.Request) -> web.Response:
             rec.title = str(data["title"]).strip()[:120]
         if "amount" in data and data["amount"] is not None:
             try:
-                rec.amount = abs(Decimal(str(data["amount"]).replace(",", ".")).quantize(Decimal("0.01")))
+                amt = Decimal(str(data["amount"]).replace(",", ".")).quantize(Decimal("0.01"))
+                if amt <= 0 or amt > Decimal("999999999.99"):
+                    raise ValueError()
+                rec.amount = amt
             except Exception:
                 return web.json_response({"error": "Invalid amount"}, status=400)
         if "period" in data and data["period"] in ("daily", "weekly", "monthly", "yearly"):
@@ -439,7 +424,9 @@ async def handle_export_csv(request: web.Request) -> web.Response:
         txs, _ = await get_user_transactions(session, user.id, limit=5000, offset=0)
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(["ID", "Date", "Time", "Type", "Amount", "Currency", "Description"])
+        writer.writerow(
+            ["ID", "Date", "Time", "Type", "Category", "Amount", "Currency", "Description"]
+        )
         for tx in txs:
             dt_local = to_local_datetime(tx.created_at, user.timezone)
             writer.writerow(
@@ -448,6 +435,7 @@ async def handle_export_csv(request: web.Request) -> web.Response:
                     dt_local.strftime("%Y-%m-%d"),
                     dt_local.strftime("%H:%M:%S"),
                     tx.tx_type,
+                    getattr(tx, "category", "other"),
                     f"{tx.amount:.2f}",
                     tx.currency,
                     tx.description,

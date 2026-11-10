@@ -15,8 +15,35 @@ from aiogram.types import (
 from bot.config import settings
 from bot.database.models import RecurringTransaction, Transaction
 from bot.i18n.translations import t
+from bot.services.categories import (
+    CATEGORIES,
+    EXPENSE_CATEGORY_CODES,
+    INCOME_CATEGORY_CODES,
+)
 from bot.services.currencies import CURRENCIES, FEATURED_CURRENCY_CODES, format_money
 from bot.services.geo import COUNTRIES, POPULAR_TIMEZONES
+
+
+def persistent_reply_kb(lang: str = "ru") -> ReplyKeyboardMarkup:
+    """Persistent bottom Reply Keyboard for 1-tap navigation from any chat screen."""
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton(text=t("kb_expense", lang)),
+                KeyboardButton(text=t("kb_income", lang)),
+            ],
+            [
+                KeyboardButton(text=t("kb_stats", lang)),
+                KeyboardButton(text=t("kb_history", lang)),
+            ],
+            [
+                KeyboardButton(text=t("kb_menu", lang)),
+                KeyboardButton(text=t("kb_profile", lang)),
+            ],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
 
 
 def language_select_kb() -> InlineKeyboardMarkup:
@@ -154,8 +181,6 @@ def main_menu_kb(lang: str = "ru", telegram_id: Optional[int] = None) -> InlineK
 
     if settings.webapp_url and settings.webapp_url.startswith("https://"):
         url = settings.webapp_url.rstrip("/")
-        if telegram_id:
-            url = f"{url}/?uid={telegram_id}"
         rows.append(
             [
                 InlineKeyboardButton(
@@ -180,6 +205,7 @@ def tx_saved_kb(tx_id: int, lang: str = "ru") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
+                InlineKeyboardButton(text=t("btn_change_cat", lang), callback_data=f"tx:cat:{tx_id}"),
                 InlineKeyboardButton(text=t("btn_edit_tx", lang), callback_data=f"tx:edit:{tx_id}"),
                 InlineKeyboardButton(text=t("btn_delete_tx", lang), callback_data=f"tx:del:{tx_id}"),
             ],
@@ -188,6 +214,28 @@ def tx_saved_kb(tx_id: int, lang: str = "ru") -> InlineKeyboardMarkup:
             ],
         ]
     )
+
+
+def category_picker_kb(tx_id: int, tx_type: str = "expense", lang: str = "ru") -> InlineKeyboardMarkup:
+    codes = INCOME_CATEGORY_CODES if tx_type == "income" else EXPENSE_CATEGORY_CODES
+    rows: List[List[InlineKeyboardButton]] = []
+    row: List[InlineKeyboardButton] = []
+    for code in codes:
+        info = CATEGORIES[code]
+        name = info.name_ru if lang == "ru" else info.name_en
+        row.append(
+            InlineKeyboardButton(
+                text=f"{info.icon} {name}",
+                callback_data=f"tx:setcat:{tx_id}:{code}",
+            )
+        )
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton(text=t("btn_back_menu", lang), callback_data="menu:home")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def history_list_kb(
@@ -235,6 +283,7 @@ def tx_detail_kb(tx_id: int, offset: int = 0, lang: str = "ru") -> InlineKeyboar
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
+                InlineKeyboardButton(text=t("btn_change_cat", lang), callback_data=f"tx:cat:{tx_id}"),
                 InlineKeyboardButton(text=t("btn_edit_tx", lang), callback_data=f"tx:edit:{tx_id}"),
                 InlineKeyboardButton(text=t("btn_delete_tx", lang), callback_data=f"tx:del:{tx_id}"),
             ],

@@ -1,5 +1,6 @@
-"""Transaction logging (2-second instant entry + guided), history, edit, and delete handlers."""
+"""Transaction logging (verified DB commit before confirmation), history, edit, delete, and category handlers."""
 
+import logging
 import math
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -21,14 +22,17 @@ from bot.database.session import async_session_factory
 from bot.i18n.translations import t
 from bot.keyboards.inline import (
     back_to_menu_kb,
+    category_picker_kb,
     history_list_kb,
     tx_detail_kb,
     tx_saved_kb,
 )
+from bot.services.categories import get_category_label
 from bot.services.currencies import format_money
 from bot.services.parser import parse_transaction_message
 from bot.states.forms import TransactionStates
 
+logger = logging.getLogger(__name__)
 router = Router(name="transactions")
 HISTORY_PAGE_SIZE = 6
 
@@ -36,11 +40,13 @@ HISTORY_PAGE_SIZE = 6
 def _format_tx_confirmation(tx: Transaction, user: User, new_balance) -> str:
     lang = user.language
     local_dt = to_local_datetime(tx.created_at, user.timezone)
-    desc = tx.description or (
+    cat_label = get_category_label(getattr(tx, "category", "other"), lang=lang, tx_type=tx.tx_type)
+    base_desc = tx.description or (
         t("no_description_expense", lang)
         if tx.tx_type == "expense"
         else t("no_description_income", lang)
     )
+    desc = f"{base_desc} ({cat_label})"
     tpl_key = "expense_saved" if tx.tx_type == "expense" else "income_saved"
     return t(
         tpl_key,
@@ -102,11 +108,8 @@ async def _render_history_page(session, user: User, offset: int = 0):
     for tx in txs:
         local_dt = to_local_datetime(tx.created_at, user.timezone)
         amt_str = format_money(tx.amount, tx.currency, tx_type=tx.tx_type)
-        desc = tx.description or (
-            t("no_description_expense", lang)
-            if tx.tx_type == "expense"
-            else t("no_description_income", lang)
-        )
+        cat_label = get_category_label(getattr(tx, "category", "other"), lang=lang, tx_type=tx.tx_type)
+        desc = tx.description or cat_label
         lines.append(
             f"• <b>{amt_str}</b> — {desc} <i>({local_dt.strftime('%d.%m %H:%M')})</i>"
         )
@@ -158,7 +161,8 @@ async def cb_tx_view(callback: CallbackQuery) -> None:
 
         lang = user.language
         local_dt = to_local_datetime(tx.created_at, user.timezone)
-        desc = tx.description or (
+        cat_label = get_category_label(getattr(tx, "category", "other"), lang=lang, tx_type=tx.tx_type)
+        base_desc = tx.description or (
             t("no_description_expense", lang)
             if tx.tx_type == "expense"
             else t("no_description_income", lang)
@@ -167,10 +171,10 @@ async def cb_tx_view(callback: CallbackQuery) -> None:
             "tx_detail_view",
             lang,
             tx_id=tx.id,
-            type_label=t("type_expense" if tx.tx_type == "expense" else "type_income", lang),
+            type_label=f"{t('type_expense' if tx.tx_type == 'expense' else 'type_income', lang)} ({cat_label})",
             formatted_amount=format_money(tx.amount, tx.currency, tx_type=tx.tx_type),
             currency=tx.currency,
-            description=desc,
+            description=base_desc,
             date=local_dt.strftime("%d.%m.%Y"),
             time=local_dt.strftime("%H:%M"),
         )
@@ -180,6 +184,54 @@ async def cb_tx_view(callback: CallbackQuery) -> None:
             parse_mode="HTML",
         )
         await callback.answer()
+
+
+@router.callback_query(F.data.startswith("tx:cat:"))
+async def cb_tx_pick_category(callback: CallbackQuery) -> None:
+    tx_id = int(callback.data.split(":")[-1])
+    async with async_session_factory() as session:
+        user = await get_user_by_telegram_id(session, callback.from_user.id)
+        if not user:
+            await callback.answer()
+            return
+        tx = await get_transaction_by_id(session, tx_id, user_id=user.id)
+        if not tx:
+            await callback.answer(t("tx_not_found", user.language), show_alert=True)
+            return
+        await callback.message.edit_text(
+            t("choose_cat_prompt", user.language, tx_id=tx.id),
+            reply_markup=category_picker_kb(tx.id, tx_type=tx.tx_type, lang=user.language),
+            parse_mode="HTML",
+        )
+        await callback.answer()
+
+
+@router.callback_query(F.data.startswith("tx:setcat:"))
+async def cb_tx_set_category(callback: CallbackQuery) -> None:
+    parts = callback.data.split(":")
+    tx_id = int(parts[2])
+    cat_code = parts[3]
+
+    async with async_session_factory() as session:
+        user = await get_user_by_telegram_id(session, callback.from_user.id)
+        if not user:
+            await callback.answer()
+            return
+        tx = await update_transaction(
+            session, tx_id=tx_id, user_id=user.id, category=cat_code
+        )
+        if not tx:
+            await callback.answer(t("tx_not_found", user.language), show_alert=True)
+            return
+        new_balance = await get_user_balance(session, user.id)
+        confirm_text = _format_tx_confirmation(tx, user, new_balance)
+        await callback.message.edit_text(
+            confirm_text,
+            reply_markup=tx_saved_kb(tx.id, lang=user.language),
+            parse_mode="HTML",
+        )
+        cat_label = get_category_label(cat_code, lang=user.language, tx_type=tx.tx_type)
+        await callback.answer(t("cat_updated", user.language, category=cat_label))
 
 
 @router.callback_query(F.data.startswith("tx:edit:"))
@@ -301,11 +353,24 @@ async def msg_guided_income(message: Message, state: FSMContext) -> None:
     await _handle_transaction_entry(message, state, default_type="income")
 
 
+@router.message(F.text.startswith("/"))
+async def msg_unknown_command(message: Message) -> None:
+    async with async_session_factory() as session:
+        user = await get_user_by_telegram_id(session, message.from_user.id)
+        lang = user.language if user else "ru"
+        await message.answer(
+            t("unknown_command", lang),
+            reply_markup=back_to_menu_kb(lang),
+            parse_mode="HTML",
+        )
+
+
 @router.message(F.text)
 async def msg_instant_transaction_entry(message: Message, state: FSMContext) -> None:
     """
     Core 2-3 second instant transaction logger!
-    Any plain text message starting with a number or +/- amount is saved right away.
+    Any plain text message starting with a number or +amount is validated,
+    committed to the database first, verified, and only then confirmed.
     """
     await _handle_transaction_entry(message, state, default_type="expense")
 
@@ -330,20 +395,40 @@ async def _handle_transaction_entry(
             )
             return
 
+        idem_key = None
+        if message.chat and message.message_id:
+            idem_key = f"msg:{message.chat.id}:{message.message_id}"
+
+        try:
+            tx = await add_transaction(
+                session=session,
+                user_id=user.id,
+                tx_type=parsed.tx_type,
+                amount=parsed.amount,
+                currency=user.currency,
+                description=parsed.description,
+                idempotency_key=idem_key,
+            )
+            if tx is None or tx.id is None:
+                raise RuntimeError("Transaction was not persisted")
+            new_balance = await get_user_balance(session, user.id)
+        except Exception as exc:
+            logger.error(
+                "Failed to persist transaction for user=%s: %s",
+                user.telegram_id,
+                type(exc).__name__,
+            )
+            await message.answer(
+                t("db_save_error", user.language),
+                reply_markup=back_to_menu_kb(user.language),
+                parse_mode="HTML",
+            )
+            return
+
         await state.clear()
-        tx = await add_transaction(
-            session=session,
-            user_id=user.id,
-            tx_type=parsed.tx_type,
-            amount=parsed.amount,
-            currency=user.currency,
-            description=parsed.description,
-        )
-        new_balance = await get_user_balance(session, user.id)
         confirm_text = _format_tx_confirmation(tx, user, new_balance)
         await message.answer(
             confirm_text,
             reply_markup=tx_saved_kb(tx.id, lang=user.language),
             parse_mode="HTML",
         )
-

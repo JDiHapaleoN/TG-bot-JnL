@@ -1,4 +1,4 @@
-"""Unit tests for the 2-second transaction parser."""
+"""Unit tests for the 2-second transaction parser including negative and boundary checks."""
 
 from decimal import Decimal
 import unittest
@@ -65,13 +65,19 @@ class TestTransactionParser(unittest.TestCase):
         self.assertEqual(res.amount, Decimal("1500.00"))
         self.assertEqual(res.description, "Зарплата")
 
-    def test_invalid_inputs_return_none(self):
+    def test_negative_and_invalid_inputs_rejected(self):
         self.assertIsNone(parse_transaction_message(""))
+        self.assertIsNone(parse_transaction_message("   "))
         self.assertIsNone(parse_transaction_message("/start"))
         self.assertIsNone(parse_transaction_message("Просто текст без суммы"))
         self.assertIsNone(parse_transaction_message("0"))
+        self.assertIsNone(parse_transaction_message("0.00"))
+        self.assertIsNone(parse_transaction_message("-5"))
+        self.assertIsNone(parse_transaction_message("-12.50 Обед"))
+        self.assertIsNone(parse_transaction_message("−100"))
+        self.assertIsNone(parse_transaction_message("12.345"))
+        self.assertIsNone(parse_transaction_message("1000000000.00"))
 
 
 if __name__ == "__main__":
     unittest.main()
-

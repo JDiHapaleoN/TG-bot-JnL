@@ -1,4 +1,4 @@
-"""Background async scheduler for recurring operations and daily reminders."""
+"""Background async scheduler for recurring operations, daily reminders, and periodic DB backups."""
 
 import asyncio
 import logging
@@ -16,6 +16,7 @@ from bot.database.crud import (
 )
 from bot.database.session import async_session_factory
 from bot.i18n.translations import t
+from bot.services.backup import create_database_backup
 from bot.services.currencies import format_money
 
 logger = logging.getLogger(__name__)
@@ -62,19 +63,23 @@ async def run_scheduler_tick(bot: Optional[Bot] = None) -> None:
                             parse_mode="HTML",
                         )
             except Exception as exc:
-                logger.warning("Scheduler error for user %s: %s", user.telegram_id, exc)
+                logger.warning("Scheduler error for user %s: %s", user.telegram_id, type(exc).__name__)
 
 
 async def scheduler_loop(bot: Optional[Bot] = None, interval_seconds: int = 60) -> None:
-    """Continuous background loop for executing scheduled tasks."""
+    """Continuous background loop for executing scheduled tasks and periodic DB backups."""
     logger.info("Background scheduler started (interval=%ss).", interval_seconds)
+    tick_count = 0
     while True:
         try:
             await run_scheduler_tick(bot=bot)
+            tick_count += 1
+            # Create a verified backup every 6 hours (360 ticks at 60s interval)
+            if tick_count % 360 == 0:
+                create_database_backup(tag="periodic")
         except asyncio.CancelledError:
-            logger.info("Background scheduler stopped.")
+            logger.info("Background scheduler stopped cleanly.")
             break
         except Exception as exc:
-            logger.error("Unexpected scheduler loop error: %s", exc)
+            logger.error("Unexpected scheduler loop error: %s", type(exc).__name__)
         await asyncio.sleep(interval_seconds)
-

@@ -288,6 +288,24 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
             "⏰ <b>Напоминание о расходах</b>\n\n"
             "Не забудьте записать сегодняшние расходы! Просто отправьте сумму в чат (например: <code>12.50 Ужин</code>)."
         ),
+        "system_error_safe": (
+            "⚠️ Произошла временная техническая задержка. Ваши данные в безопасности, попробуйте ещё раз."
+        ),
+        "db_save_error": (
+            "⚠️ Не удалось сохранить операцию из-за временной ошибки базы данных. Попробуйте отправить сумму ещё раз."
+        ),
+        "unknown_command": (
+            "ℹ️ Неизвестная команда. Используйте /menu для открытия главного меню или просто отправьте сумму в чат."
+        ),
+        "kb_expense": "➕ Расход",
+        "kb_income": "👛 Доход",
+        "kb_stats": "📊 Статистика",
+        "kb_history": "🕒 История",
+        "kb_menu": "🏠 Главное меню",
+        "kb_profile": "👤 Профиль",
+        "btn_change_cat": "🏷 Категория",
+        "choose_cat_prompt": "🏷 <b>Выберите категорию для операции #{tx_id}:</b>",
+        "cat_updated": "✅ Категория изменена на: <b>{category}</b>",
     },
     "en": {
         # Registration
@@ -574,6 +592,24 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
             "⏰ <b>Daily Expense Reminder</b>\n\n"
             "Don't forget to log today's expenses! Simply send an amount in chat (e.g. <code>12.50 Dinner</code>)."
         ),
+        "system_error_safe": (
+            "⚠️ A temporary technical issue occurred. Your data is safe, please try again."
+        ),
+        "db_save_error": (
+            "⚠️ Could not save the transaction due to a temporary database issue. Please try sending the amount again."
+        ),
+        "unknown_command": (
+            "ℹ️ Unknown command. Use /menu to open the main menu or simply send an amount in chat."
+        ),
+        "kb_expense": "➕ Expense",
+        "kb_income": "👛 Income",
+        "kb_stats": "📊 Statistics",
+        "kb_history": "🕒 History",
+        "kb_menu": "🏠 Main Menu",
+        "kb_profile": "👤 Profile",
+        "btn_change_cat": "🏷 Category",
+        "choose_cat_prompt": "🏷 <b>Select category for transaction #{tx_id}:</b>",
+        "cat_updated": "✅ Category updated to: <b>{category}</b>",
     },
 }
 

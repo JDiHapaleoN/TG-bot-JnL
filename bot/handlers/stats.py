@@ -1,4 +1,4 @@
-"""Statistics view handlers."""
+"""Statistics view handlers with category breakdown."""
 
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -13,6 +13,7 @@ from bot.database.models import User
 from bot.database.session import async_session_factory
 from bot.i18n.translations import t
 from bot.keyboards.inline import back_to_menu_kb
+from bot.services.categories import get_category_label
 from bot.services.currencies import format_money
 from bot.services.geo import format_timezone_with_offset
 
@@ -25,7 +26,7 @@ async def _build_stats_text(session, user: User) -> str:
     lang = user.language
     cur = user.currency
 
-    return t(
+    base = t(
         "stats_card",
         lang,
         balance=format_money(stats.balance, cur),
@@ -40,6 +41,26 @@ async def _build_stats_text(session, user: User) -> str:
         net_diff=format_money(stats.net_diff, cur, signed=True),
         timezone=format_timezone_with_offset(user.timezone),
     )
+
+    if stats.month_by_category and stats.month_expense > 0:
+        header = (
+            "\n\n🏷 <b>По категориям (за месяц):</b>"
+            if lang == "ru"
+            else "\n\n🏷 <b>By Category (This Month):</b>"
+        )
+        cat_lines = [header]
+        sorted_cats = sorted(
+            stats.month_by_category.items(), key=lambda kv: kv[1], reverse=True
+        )
+        for cat_code, amt in sorted_cats:
+            pct = (amt / stats.month_expense) * 100
+            label = get_category_label(cat_code, lang=lang, tx_type="expense")
+            cat_lines.append(
+                f"• {label}: <code>{format_money(amt, cur, tx_type='expense')}</code> ({pct:.0f}%)"
+            )
+        base += "\n".join(cat_lines)
+
+    return base
 
 
 @router.message(Command("stats"))
@@ -70,4 +91,3 @@ async def cb_menu_stats(callback: CallbackQuery) -> None:
             parse_mode="HTML",
         )
         await callback.answer()
-

@@ -1,17 +1,36 @@
 #!/usr/bin/env bash
 # Safe, isolated installer for JnL-Bot on Ubuntu VPS (HestiaCP / Nginx safe)
-# Installs strictly into /opt/jnl-bot, runs 24/7 via systemd, and auto-updates from GitHub every 60s.
+# Physically separates code (/opt/jnl-bot), database (/var/lib/jnl-bot/data), and backups (/var/backups/jnl-bot).
 set -e
 
 INSTALL_DIR="/opt/jnl-bot"
+PERSISTENT_DATA_DIR="/var/lib/jnl-bot/data"
+BACKUP_DIR="/var/backups/jnl-bot"
 REPO_URL="https://github.com/JDiHapaleoN/TG-bot-JnL.git"
 TOKEN_ARG="${1:-}"
+
+mkdir -p "$PERSISTENT_DATA_DIR" "$BACKUP_DIR"
+chmod 700 "$PERSISTENT_DATA_DIR" "$BACKUP_DIR"
 
 echo "==> [1/5] Checking python3-venv (ensurepip) and git..."
 if ! python3 -c "import ensurepip" >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -y
     apt-get install -y python3-venv python3-pip git
+fi
+
+# Preserve any existing database in /opt/jnl-bot/data before git operations
+if [ -d "$INSTALL_DIR/data" ] && [ ! -L "$INSTALL_DIR/data" ]; then
+    if [ -f "$INSTALL_DIR/data/finance_bot.db" ] && [ ! -f "$PERSISTENT_DATA_DIR/finance_bot.db" ]; then
+        cp -a "$INSTALL_DIR/data/finance_bot.db"* "$PERSISTENT_DATA_DIR/" 2>/dev/null || true
+    fi
+fi
+
+# Preserve existing .env if present
+TMP_ENV=""
+if [ -f "$INSTALL_DIR/.env" ]; then
+    TMP_ENV=$(mktemp)
+    cp -a "$INSTALL_DIR/.env" "$TMP_ENV"
 fi
 
 echo "==> [2/5] Cloning / updating repository in $INSTALL_DIR..."
@@ -23,6 +42,15 @@ else
     git fetch origin main
     git reset --hard origin/main
 fi
+
+if [ -n "$TMP_ENV" ] && [ -f "$TMP_ENV" ]; then
+    cp -a "$TMP_ENV" "$INSTALL_DIR/.env"
+    rm -f "$TMP_ENV"
+fi
+
+# Link /opt/jnl-bot/data -> /var/lib/jnl-bot/data so data is stored outside the repo
+rm -rf "$INSTALL_DIR/data"
+ln -s "$PERSISTENT_DATA_DIR" "$INSTALL_DIR/data"
 
 cd "$INSTALL_DIR"
 chmod +x "$INSTALL_DIR/deploy/"*.sh
@@ -37,13 +65,14 @@ echo "==> [4/5] Configuring .env..."
 if [ -n "$TOKEN_ARG" ]; then
     cat <<EOF > "$INSTALL_DIR/.env"
 BOT_TOKEN=$TOKEN_ARG
-DATABASE_URL=sqlite+aiosqlite:///./data/finance_bot.db
+DATABASE_URL=sqlite+aiosqlite:///$PERSISTENT_DATA_DIR/finance_bot.db
+BACKUP_DIR=$BACKUP_DIR
 WEBAPP_HOST=127.0.0.1
 WEBAPP_PORT=0
 WEBAPP_URL=
 EOF
     chmod 600 "$INSTALL_DIR/.env"
-    echo "    .env configured with provided BOT_TOKEN."
+    echo "    .env configured with provided BOT_TOKEN and persistent storage path."
 elif [ ! -f "$INSTALL_DIR/.env" ]; then
     cp "$INSTALL_DIR/.env.example" "$INSTALL_DIR/.env"
     chmod 600 "$INSTALL_DIR/.env"

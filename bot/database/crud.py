@@ -1,16 +1,23 @@
-"""Database CRUD operations and financial statistics calculations."""
+"""Database CRUD operations, idempotency guarantees, and exact Decimal financial statistics."""
 
 import calendar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
-from decimal import Decimal
-from typing import List, Optional, Tuple
+from decimal import Decimal, InvalidOperation
+from typing import Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import delete, desc, func, select
+from sqlalchemy import desc, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot.database.models import RecurringTransaction, Transaction, User
+from bot.database.models import (
+    ProcessedUpdate,
+    RecurringTransaction,
+    Transaction,
+    User,
+)
+from bot.services.categories import detect_category
 
 
 @dataclass
@@ -25,6 +32,7 @@ class FinancialStats:
     week_income: Decimal
     month_expense: Decimal
     month_income: Decimal
+    month_by_category: Dict[str, Decimal] = field(default_factory=dict)
 
 
 def get_user_tz(tz_name: str) -> ZoneInfo:
@@ -62,12 +70,61 @@ def advance_date(current_date_str: str, period: str) -> str:
         last_day = calendar.monthrange(year, d.month)[1]
         next_d = date(year, d.month, min(d.day, last_day))
     else:
-        next_d = d + timedelta(months=1) if hasattr(timedelta, "months") else d + timedelta(days=30)
+        next_d = d + timedelta(days=30)
     return next_d.isoformat()
 
 
+def _to_exact_decimal(value: Decimal | float | int | str) -> Decimal:
+    """Convert numeric input to exact 2-decimal-place Decimal without float artifacts."""
+    if isinstance(value, float):
+        value = f"{value:.2f}"
+    try:
+        dec = Decimal(str(value).strip()).quantize(Decimal("0.01"))
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError(f"Invalid monetary amount: {value}") from exc
+    return dec
+
+
 # ---------------------------------------------------------------------------
-# User Operations
+# Telegram Update Idempotency Operations
+# ---------------------------------------------------------------------------
+
+
+async def is_update_processed(session: AsyncSession, update_id: int) -> bool:
+    if not update_id:
+        return False
+    stmt = select(ProcessedUpdate.update_id).where(ProcessedUpdate.update_id == update_id)
+    res = await session.execute(stmt)
+    return res.scalar_one_or_none() is not None
+
+
+async def mark_update_processed(
+    session: AsyncSession, update_id: int, telegram_id: Optional[int] = None
+) -> bool:
+    """
+    Record an update_id as processed. Returns True if newly recorded,
+    or False if it was already processed.
+    """
+    if not update_id:
+        return True
+    if await is_update_processed(session, update_id):
+        return False
+    try:
+        rec = ProcessedUpdate(
+            update_id=update_id,
+            telegram_id=telegram_id,
+            processed_at=datetime.now(timezone.utc),
+        )
+        session.add(rec)
+        await session.commit()
+        return True
+    except IntegrityError:
+        await session.rollback()
+        return False
+
+
+# ---------------------------------------------------------------------------
+# User Operations (Strictly keyed by immutable telegram_id)
 # ---------------------------------------------------------------------------
 
 
@@ -99,26 +156,35 @@ async def create_or_update_user(
     if user is None:
         user = User(
             telegram_id=telegram_id,
-            name=name,
+            name=(name or "User").strip()[:120],
             phone=phone,
-            country_code=country_code,
-            country_name=country_name,
-            currency=currency,
-            timezone=tz_name,
-            language=language,
+            country_code=(country_code or "DE").upper()[:8],
+            country_name=(country_name or "Germany")[:100],
+            currency=(currency or "EUR").upper()[:8],
+            timezone=(tz_name or "Europe/Berlin")[:64],
+            language=(language or "ru")[:8],
             is_registered=is_registered,
         )
         session.add(user)
-    else:
-        user.name = name
-        if phone is not None:
-            user.phone = phone
-        user.country_code = country_code
-        user.country_name = country_name
-        user.currency = currency
-        user.timezone = tz_name
-        user.language = language
-        user.is_registered = is_registered
+        try:
+            await session.commit()
+            await session.refresh(user)
+            return user
+        except IntegrityError:
+            await session.rollback()
+            user = await get_user_by_telegram_id(session, telegram_id)
+            if user is None:
+                raise
+
+    user.name = (name or user.name or "User").strip()[:120]
+    if phone is not None:
+        user.phone = phone
+    user.country_code = (country_code or user.country_code or "DE").upper()[:8]
+    user.country_name = (country_name or user.country_name or "Germany")[:100]
+    user.currency = (currency or user.currency or "EUR").upper()[:8]
+    user.timezone = (tz_name or user.timezone or "Europe/Berlin")[:64]
+    user.language = (language or user.language or "ru")[:8]
+    user.is_registered = is_registered
 
     await session.commit()
     await session.refresh(user)
@@ -130,7 +196,7 @@ async def update_user_fields(session: AsyncSession, telegram_id: int, **kwargs) 
     if not user:
         return None
     for key, value in kwargs.items():
-        if hasattr(user, key):
+        if hasattr(user, key) and key not in ("id", "telegram_id", "created_at"):
             setattr(user, key, value)
     await session.commit()
     await session.refresh(user)
@@ -153,8 +219,16 @@ async def get_all_registered_users(session: AsyncSession) -> List[User]:
 
 
 # ---------------------------------------------------------------------------
-# Transaction Operations
+# Transaction Operations (Atomic, Verified, Idempotent, Owner-Isolated)
 # ---------------------------------------------------------------------------
+
+
+async def get_transaction_by_idempotency_key(
+    session: AsyncSession, idempotency_key: str
+) -> Optional[Transaction]:
+    stmt = select(Transaction).where(Transaction.idempotency_key == idempotency_key)
+    res = await session.execute(stmt)
+    return res.scalar_one_or_none()
 
 
 async def add_transaction(
@@ -164,31 +238,62 @@ async def add_transaction(
     amount: Decimal | float | str,
     currency: str,
     description: str = "",
+    category: Optional[str] = None,
     recurring_id: Optional[int] = None,
+    idempotency_key: Optional[str] = None,
     created_at: Optional[datetime] = None,
 ) -> Transaction:
-    dec_amount = Decimal(str(amount)).quantize(Decimal("0.01"))
+    if tx_type not in ("expense", "income"):
+        raise ValueError(f"Invalid transaction type: {tx_type}")
+
+    dec_amount = _to_exact_decimal(amount)
+    if dec_amount <= Decimal("0.00") or dec_amount > Decimal("999999999.99"):
+        raise ValueError(f"Transaction amount out of allowed range: {dec_amount}")
+
+    if idempotency_key:
+        existing = await get_transaction_by_idempotency_key(session, idempotency_key)
+        if existing is not None:
+            return existing
+
+    clean_desc = (description or "").strip()[:255]
+    resolved_cat = category or detect_category(clean_desc, tx_type=tx_type)
+
     tx = Transaction(
         user_id=user_id,
         tx_type=tx_type,
-        amount=abs(dec_amount),
-        currency=currency.upper(),
-        description=description.strip(),
+        amount=dec_amount,
+        currency=(currency or "EUR").upper().strip()[:8],
+        category=resolved_cat,
+        description=clean_desc,
         recurring_id=recurring_id,
+        idempotency_key=idempotency_key,
         created_at=created_at or datetime.now(timezone.utc),
     )
     session.add(tx)
-    await session.commit()
-    await session.refresh(tx)
+    try:
+        await session.commit()
+        await session.refresh(tx)
+    except IntegrityError:
+        await session.rollback()
+        if idempotency_key:
+            existing = await get_transaction_by_idempotency_key(session, idempotency_key)
+            if existing is not None:
+                return existing
+        raise
+
+    if tx.id is None:
+        raise RuntimeError("Transaction commit did not produce a valid database ID")
     return tx
 
 
 async def get_transaction_by_id(
-    session: AsyncSession, tx_id: int, user_id: Optional[int] = None
+    session: AsyncSession, tx_id: int, user_id: int
 ) -> Optional[Transaction]:
-    stmt = select(Transaction).where(Transaction.id == tx_id)
-    if user_id is not None:
-        stmt = stmt.where(Transaction.user_id == user_id)
+    """Retrieve a transaction strictly owned by user_id."""
+    stmt = select(Transaction).where(
+        Transaction.id == tx_id,
+        Transaction.user_id == user_id,
+    )
     result = await session.execute(stmt)
     return result.scalar_one_or_none()
 
@@ -200,16 +305,25 @@ async def update_transaction(
     amount: Optional[Decimal | float | str] = None,
     description: Optional[str] = None,
     tx_type: Optional[str] = None,
+    category: Optional[str] = None,
 ) -> Optional[Transaction]:
     tx = await get_transaction_by_id(session, tx_id, user_id=user_id)
     if not tx:
         return None
     if amount is not None:
-        tx.amount = abs(Decimal(str(amount)).quantize(Decimal("0.01")))
-    if description is not None:
-        tx.description = description.strip()
+        dec_amt = _to_exact_decimal(amount)
+        if dec_amt <= Decimal("0.00") or dec_amt > Decimal("999999999.99"):
+            raise ValueError(f"Invalid updated amount: {dec_amt}")
+        tx.amount = dec_amt
     if tx_type in ("expense", "income"):
         tx.tx_type = tx_type
+    if description is not None:
+        tx.description = description.strip()[:255]
+        if category is None:
+            tx.category = detect_category(tx.description, tx_type=tx.tx_type)
+    if category is not None:
+        tx.category = category.strip()[:64]
+
     await session.commit()
     await session.refresh(tx)
     return tx
@@ -245,37 +359,39 @@ async def get_user_transactions(
 
 
 async def get_user_balance(session: AsyncSession, user_id: int) -> Decimal:
-    income_stmt = select(func.coalesce(func.sum(Transaction.amount), 0)).where(
-        Transaction.user_id == user_id,
-        Transaction.tx_type == "income",
+    """
+    Calculate user balance using exact Python Decimal arithmetic
+    (avoiding SQLite internal floating-point SUM() inaccuracies).
+    """
+    stmt = select(Transaction.tx_type, Transaction.amount).where(
+        Transaction.user_id == user_id
     )
-    expense_stmt = select(func.coalesce(func.sum(Transaction.amount), 0)).where(
-        Transaction.user_id == user_id,
-        Transaction.tx_type == "expense",
-    )
-    inc = Decimal(str((await session.execute(income_stmt)).scalar() or 0))
-    exp = Decimal(str((await session.execute(expense_stmt)).scalar() or 0))
-    return (inc - exp).quantize(Decimal("0.01"))
+    rows = (await session.execute(stmt)).all()
+    balance = Decimal("0.00")
+    for tx_type, raw_amt in rows:
+        amt = _to_exact_decimal(raw_amt)
+        if tx_type == "income":
+            balance += amt
+        else:
+            balance -= amt
+    return balance.quantize(Decimal("0.01"))
 
 
 async def get_user_statistics(
     session: AsyncSession, user: User, reference_utc: Optional[datetime] = None
 ) -> FinancialStats:
-    """Compute day, week, month, and all-time statistics in user's local timezone."""
+    """Compute day, week, month, and all-time statistics in user's local timezone with exact Decimal math."""
     tz = get_user_tz(user.timezone)
     now_utc = reference_utc or datetime.now(timezone.utc)
     if now_utc.tzinfo is None:
         now_utc = now_utc.replace(tzinfo=timezone.utc)
     now_local = now_utc.astimezone(tz)
 
-    # Start of today in user's local timezone -> UTC
     start_of_day_local = datetime.combine(now_local.date(), time.min, tzinfo=tz)
-    # Start of ISO week (Monday) in user's local timezone
     days_since_monday = now_local.weekday()
     start_of_week_local = datetime.combine(
         now_local.date() - timedelta(days=days_since_monday), time.min, tzinfo=tz
     )
-    # Start of current month in user's local timezone
     start_of_month_local = datetime.combine(
         now_local.date().replace(day=1), time.min, tzinfo=tz
     )
@@ -293,9 +409,10 @@ async def get_user_statistics(
     week_income = zero
     month_expense = zero
     month_income = zero
+    month_by_category: Dict[str, Decimal] = {}
 
     for tx in txs:
-        amt = Decimal(str(tx.amount)).quantize(Decimal("0.01"))
+        amt = _to_exact_decimal(tx.amount)
         tx_local = to_local_datetime(tx.created_at, user.timezone)
         is_inc = tx.tx_type == "income"
 
@@ -321,6 +438,10 @@ async def get_user_statistics(
                 month_income += amt
             else:
                 month_expense += amt
+                cat_key = getattr(tx, "category", None) or "other"
+                month_by_category[cat_key] = (
+                    month_by_category.get(cat_key, zero) + amt
+                ).quantize(Decimal("0.01"))
 
     balance = (total_income - total_expense).quantize(Decimal("0.01"))
     net_diff = (month_income - month_expense).quantize(Decimal("0.01"))
@@ -336,11 +457,12 @@ async def get_user_statistics(
         week_income=week_income.quantize(Decimal("0.01")),
         month_expense=month_expense.quantize(Decimal("0.01")),
         month_income=month_income.quantize(Decimal("0.01")),
+        month_by_category=month_by_category,
     )
 
 
 # ---------------------------------------------------------------------------
-# Recurring Transaction Operations
+# Recurring Transaction Operations (Idempotent & Owner-Isolated)
 # ---------------------------------------------------------------------------
 
 
@@ -354,12 +476,21 @@ async def create_recurring_transaction(
     period: str,
     next_run_date: str,
 ) -> RecurringTransaction:
-    dec_amount = abs(Decimal(str(amount)).quantize(Decimal("0.01")))
+    if tx_type not in ("expense", "income"):
+        raise ValueError(f"Invalid recurring tx_type: {tx_type}")
+    if period not in ("daily", "weekly", "monthly", "yearly"):
+        raise ValueError(f"Invalid recurring period: {period}")
+    date.fromisoformat(next_run_date)
+
+    dec_amount = _to_exact_decimal(amount)
+    if dec_amount <= Decimal("0.00") or dec_amount > Decimal("999999999.99"):
+        raise ValueError(f"Recurring amount out of range: {dec_amount}")
+
     rec = RecurringTransaction(
         user_id=user_id,
-        title=title.strip(),
+        title=title.strip()[:120],
         amount=dec_amount,
-        currency=currency.upper(),
+        currency=(currency or "EUR").upper()[:8],
         tx_type=tx_type,
         period=period,
         next_run_date=next_run_date,
@@ -384,11 +515,12 @@ async def get_user_recurring_transactions(
 
 
 async def get_recurring_by_id(
-    session: AsyncSession, rec_id: int, user_id: Optional[int] = None
+    session: AsyncSession, rec_id: int, user_id: int
 ) -> Optional[RecurringTransaction]:
-    stmt = select(RecurringTransaction).where(RecurringTransaction.id == rec_id)
-    if user_id is not None:
-        stmt = stmt.where(RecurringTransaction.user_id == user_id)
+    stmt = select(RecurringTransaction).where(
+        RecurringTransaction.id == rec_id,
+        RecurringTransaction.user_id == user_id,
+    )
     result = await session.execute(stmt)
     return result.scalar_one_or_none()
 
@@ -419,7 +551,11 @@ async def delete_recurring_transaction(
 async def process_due_recurring_for_user(
     session: AsyncSession, user: User, current_local_date: Optional[str] = None
 ) -> List[Tuple[RecurringTransaction, Transaction]]:
-    """Check and execute any due active recurring transactions for a user."""
+    """
+    Idempotently check and execute any due active recurring transactions for a user.
+    Uses a unique idempotency_key 'rec:{rec.id}:{scheduled_date}' so a server restart
+    or concurrent tick on the same day never creates duplicate transactions.
+    """
     today_str = current_local_date or local_now(user.timezone).date().isoformat()
     stmt = select(RecurringTransaction).where(
         RecurringTransaction.user_id == user.id,
@@ -431,25 +567,39 @@ async def process_due_recurring_for_user(
 
     executed: List[Tuple[RecurringTransaction, Transaction]] = []
     for rec in due_items:
-        # Process all missed occurrences up to today (capped at 12 iterations for safety)
         iterations = 0
-        while rec.next_run_date <= today_str and iterations < 12:
+        while rec.next_run_date <= today_str and iterations < 36:
             iterations += 1
-            tx = Transaction(
-                user_id=user.id,
-                tx_type=rec.tx_type,
-                amount=rec.amount,
-                currency=rec.currency,
-                description=f"🔄 {rec.title}",
-                recurring_id=rec.id,
-                created_at=datetime.now(timezone.utc),
-            )
-            session.add(tx)
-            rec.next_run_date = advance_date(rec.next_run_date, rec.period)
-            await session.flush()
-            executed.append((rec, tx))
+            scheduled_date = rec.next_run_date
+            idem_key = f"rec:{rec.id}:{scheduled_date}"
 
-    if executed:
-        await session.commit()
+            existing_tx = await get_transaction_by_idempotency_key(session, idem_key)
+            if existing_tx is None:
+                cat = detect_category(rec.title, tx_type=rec.tx_type)
+                tx = Transaction(
+                    user_id=user.id,
+                    tx_type=rec.tx_type,
+                    amount=rec.amount,
+                    currency=rec.currency,
+                    category=cat,
+                    description=f"🔄 {rec.title}",
+                    recurring_id=rec.id,
+                    idempotency_key=idem_key,
+                    created_at=datetime.now(timezone.utc),
+                )
+                session.add(tx)
+                rec.next_run_date = advance_date(scheduled_date, rec.period)
+                try:
+                    await session.commit()
+                    await session.refresh(tx)
+                    executed.append((rec, tx))
+                except IntegrityError:
+                    await session.rollback()
+                    await session.refresh(rec)
+                    break
+            else:
+                # Already recorded for this scheduled_date; advance next_run_date safely
+                rec.next_run_date = advance_date(scheduled_date, rec.period)
+                await session.commit()
+
     return executed
-

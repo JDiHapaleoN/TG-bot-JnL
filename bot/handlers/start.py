@@ -1,4 +1,4 @@
-"""Registration and /start command handlers."""
+"""Registration and /start command handlers with existing-profile protection."""
 
 from aiogram import F, Router
 from aiogram.filters import CommandStart
@@ -15,6 +15,7 @@ from bot.keyboards.inline import (
     currency_picker_kb,
     language_select_kb,
     location_request_kb,
+    persistent_reply_kb,
     reg_confirm_kb,
     suggested_name_kb,
     timezone_picker_kb,
@@ -58,6 +59,10 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         if user and user.is_registered:
             await state.clear()
             text, kb = await build_main_menu_payload(session, user)
+            await message.answer(
+                "👋",
+                reply_markup=persistent_reply_kb(user.language),
+            )
             await message.answer(
                 text,
                 reply_markup=kb,
@@ -121,7 +126,12 @@ async def msg_reg_phone_text(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     lang = data.get("language", "ru")
     txt = message.text.strip()
-    skip_labels = {t("btn_skip_phone", "ru").lower(), t("btn_skip_phone", "en").lower(), "skip", "пропустить"}
+    skip_labels = {
+        t("btn_skip_phone", "ru").lower(),
+        t("btn_skip_phone", "en").lower(),
+        "skip",
+        "пропустить",
+    }
     phone = None if txt.lower() in skip_labels else txt[:32]
 
     await state.update_data(phone=phone)
@@ -133,7 +143,9 @@ async def msg_reg_phone_text(message: Message, state: FSMContext) -> None:
     )
 
 
-async def _send_reg_summary(message: Message, state: FSMContext, remove_reply_kb: bool = False) -> None:
+async def _send_reg_summary(
+    message: Message, state: FSMContext, remove_reply_kb: bool = False
+) -> None:
     data = await state.get_data()
     lang = data.get("language", "ru")
     name = data.get("name", "User")
@@ -206,7 +218,9 @@ async def cb_reg_edit_country(callback: CallbackQuery, state: FSMContext) -> Non
     await state.set_state(RegistrationStates.custom_country)
     await callback.message.edit_text(
         t("choose_country_prompt", lang),
-        reply_markup=country_picker_kb(prefix="reg:country", lang=lang, back_cb="reg:back_summary"),
+        reply_markup=country_picker_kb(
+            prefix="reg:country", lang=lang, back_cb="reg:back_summary"
+        ),
         parse_mode="HTML",
     )
     await callback.answer()
@@ -231,7 +245,9 @@ async def cb_reg_edit_currency(callback: CallbackQuery, state: FSMContext) -> No
     await state.set_state(RegistrationStates.custom_currency)
     await callback.message.edit_text(
         t("prompt_new_currency", lang),
-        reply_markup=currency_picker_kb(prefix="reg:currency", lang=lang, back_cb="reg:back_summary"),
+        reply_markup=currency_picker_kb(
+            prefix="reg:currency", lang=lang, back_cb="reg:back_summary"
+        ),
         parse_mode="HTML",
     )
     await callback.answer()
@@ -263,7 +279,9 @@ async def cb_reg_edit_tz(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(RegistrationStates.custom_timezone)
     await callback.message.edit_text(
         t("prompt_new_tz", lang),
-        reply_markup=timezone_picker_kb(prefix="reg:tz", lang=lang, back_cb="reg:back_summary"),
+        reply_markup=timezone_picker_kb(
+            prefix="reg:tz", lang=lang, back_cb="reg:back_summary"
+        ),
         parse_mode="HTML",
     )
     await callback.answer()
@@ -329,16 +347,29 @@ async def _edit_or_send_reg_summary(callback: CallbackQuery, state: FSMContext) 
 
 @router.callback_query(F.data == "reg:confirm")
 async def cb_reg_confirm(callback: CallbackQuery, state: FSMContext) -> None:
-    data = await state.get_data()
-    lang = data.get("language", "ru")
-    name = data.get("name") or callback.from_user.full_name or "User"
-    phone = data.get("phone")
-    country_code = data.get("country_code", "DE")
-    profile = get_country_profile(country_code)
-    currency = data.get("currency", profile.currency)
-    tz_name = data.get("timezone", profile.default_timezone)
-
     async with async_session_factory() as session:
+        existing_user = await get_user_by_telegram_id(session, callback.from_user.id)
+        if existing_user and existing_user.is_registered:
+            # Never overwrite an already-registered user's profile if they click an old button
+            await state.clear()
+            menu_text, menu_kb = await build_main_menu_payload(session, existing_user)
+            await callback.message.answer(
+                menu_text,
+                reply_markup=menu_kb,
+                parse_mode="HTML",
+            )
+            await callback.answer()
+            return
+
+        data = await state.get_data()
+        lang = data.get("language", "ru")
+        name = data.get("name") or callback.from_user.full_name or "User"
+        phone = data.get("phone")
+        country_code = data.get("country_code", "DE")
+        profile = get_country_profile(country_code)
+        currency = data.get("currency", profile.currency)
+        tz_name = data.get("timezone", profile.default_timezone)
+
         user = await create_or_update_user(
             session=session,
             telegram_id=callback.from_user.id,
@@ -353,9 +384,16 @@ async def cb_reg_confirm(callback: CallbackQuery, state: FSMContext) -> None:
         )
         await state.clear()
         cur_info = get_currency_info(user.currency)
-        await callback.message.edit_text(
-            t("reg_completed", lang, sym=cur_info.symbol),
-            parse_mode="HTML",
+        try:
+            await callback.message.edit_text(
+                t("reg_completed", lang, sym=cur_info.symbol),
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+        await callback.message.answer(
+            "⌨️",
+            reply_markup=persistent_reply_kb(lang),
         )
         menu_text, menu_kb = await build_main_menu_payload(session, user)
         await callback.message.answer(
@@ -364,4 +402,3 @@ async def cb_reg_confirm(callback: CallbackQuery, state: FSMContext) -> None:
             parse_mode="HTML",
         )
     await callback.answer()
-

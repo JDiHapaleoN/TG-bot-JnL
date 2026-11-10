@@ -1,8 +1,8 @@
-"""SQLAlchemy 2.0 ORM models for Users, Transactions, and Recurring Transactions."""
+"""SQLAlchemy 2.0 ORM models for Users, Transactions, Recurring Transactions, and Idempotency."""
 
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Optional, List
+from typing import List, Optional
 
 from sqlalchemy import (
     BigInteger,
@@ -24,17 +24,41 @@ class Base(DeclarativeBase):
     pass
 
 
+class SchemaMigration(Base):
+    __tablename__ = "schema_migrations"
+
+    version: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    applied_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class ProcessedUpdate(Base):
+    __tablename__ = "processed_updates"
+
+    update_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    telegram_id: Mapped[Optional[int]] = mapped_column(BigInteger, index=True, nullable=True)
+    processed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
 class User(Base):
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True, nullable=False)
+    telegram_id: Mapped[int] = mapped_column(
+        BigInteger, unique=True, index=True, nullable=False
+    )
     name: Mapped[str] = mapped_column(String(120), nullable=False, default="")
     phone: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     country_code: Mapped[str] = mapped_column(String(8), nullable=False, default="DE")
     country_name: Mapped[str] = mapped_column(String(100), nullable=False, default="Germany")
     currency: Mapped[str] = mapped_column(String(8), nullable=False, default="EUR")
-    timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="Europe/Berlin")
+    timezone: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="Europe/Berlin"
+    )
     language: Mapped[str] = mapped_column(String(8), nullable=False, default="ru")
 
     notify_recurring: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
@@ -43,7 +67,9 @@ class User(Base):
     last_reminder_date: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
 
     is_registered: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
 
     transactions: Mapped[List["Transaction"]] = relationship(
         "Transaction", back_populates="user", cascade="all, delete-orphan"
@@ -63,9 +89,13 @@ class Transaction(Base):
     tx_type: Mapped[str] = mapped_column(String(16), nullable=False)  # 'expense' | 'income'
     amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
     currency: Mapped[str] = mapped_column(String(8), nullable=False, default="EUR")
+    category: Mapped[str] = mapped_column(String(64), nullable=False, default="other")
     description: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     recurring_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("recurring_transactions.id", ondelete="SET NULL"), nullable=True
+    )
+    idempotency_key: Mapped[Optional[str]] = mapped_column(
+        String(128), unique=True, index=True, nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), index=True, nullable=False, default=utc_now
@@ -85,12 +115,15 @@ class RecurringTransaction(Base):
     amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
     currency: Mapped[str] = mapped_column(String(8), nullable=False, default="EUR")
     tx_type: Mapped[str] = mapped_column(String(16), nullable=False)  # 'expense' | 'income'
-    period: Mapped[str] = mapped_column(String(16), nullable=False)  # 'daily' | 'weekly' | 'monthly' | 'yearly'
-    next_run_date: Mapped[str] = mapped_column(String(16), index=True, nullable=False)  # 'YYYY-MM-DD'
+    period: Mapped[str] = mapped_column(
+        String(16), nullable=False
+    )  # 'daily' | 'weekly' | 'monthly' | 'yearly'
+    next_run_date: Mapped[str] = mapped_column(
+        String(16), index=True, nullable=False
+    )  # 'YYYY-MM-DD'
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
     )
 
     user: Mapped["User"] = relationship("User", back_populates="recurring_transactions")
-
