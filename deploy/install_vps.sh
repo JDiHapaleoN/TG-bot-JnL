@@ -98,6 +98,8 @@ S3_BUCKET_NAME=
 S3_REGION_NAME=us-east-1
 S3_ENCRYPTION_KEY=
 S3_RETENTION_DAYS=30
+S3_PBKDF2_ITERATIONS=600000
+ADMIN_TELEGRAM_ID=
 EOF
     chmod 600 "$INSTALL_DIR/.env"
     echo "    .env configured with provided BOT_TOKEN and persistent storage paths."
