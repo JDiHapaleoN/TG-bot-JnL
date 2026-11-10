@@ -7,7 +7,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -176,15 +176,32 @@ async def create_or_update_user(
             if user is None:
                 raise
 
+    old_currency = user.currency
+    new_currency = (currency or user.currency or "EUR").upper()[:8]
     user.name = (name or user.name or "User").strip()[:120]
     if phone is not None:
         user.phone = phone
     user.country_code = (country_code or user.country_code or "DE").upper()[:8]
     user.country_name = (country_name or user.country_name or "Germany")[:100]
-    user.currency = (currency or user.currency or "EUR").upper()[:8]
+    user.currency = new_currency
     user.timezone = (tz_name or user.timezone or "Europe/Berlin")[:64]
     user.language = (language or user.language or "ru")[:8]
     user.is_registered = is_registered
+
+    if old_currency and new_currency and old_currency != new_currency:
+        await session.execute(
+            update(Transaction)
+            .where(Transaction.user_id == user.id, Transaction.currency == old_currency)
+            .values(currency=new_currency)
+        )
+        await session.execute(
+            update(RecurringTransaction)
+            .where(
+                RecurringTransaction.user_id == user.id,
+                RecurringTransaction.currency == old_currency,
+            )
+            .values(currency=new_currency)
+        )
 
     await session.commit()
     await session.refresh(user)
@@ -195,9 +212,28 @@ async def update_user_fields(session: AsyncSession, telegram_id: int, **kwargs) 
     user = await get_user_by_telegram_id(session, telegram_id)
     if not user:
         return None
+    old_currency = user.currency
     for key, value in kwargs.items():
         if hasattr(user, key) and key not in ("id", "telegram_id", "created_at"):
+            if key == "currency" and isinstance(value, str):
+                value = value.upper().strip()[:8]
             setattr(user, key, value)
+
+    if "currency" in kwargs and user.currency and old_currency != user.currency:
+        await session.execute(
+            update(Transaction)
+            .where(Transaction.user_id == user.id, Transaction.currency == old_currency)
+            .values(currency=user.currency)
+        )
+        await session.execute(
+            update(RecurringTransaction)
+            .where(
+                RecurringTransaction.user_id == user.id,
+                RecurringTransaction.currency == old_currency,
+            )
+            .values(currency=user.currency)
+        )
+
     await session.commit()
     await session.refresh(user)
     return user
@@ -523,6 +559,41 @@ async def get_recurring_by_id(
     )
     result = await session.execute(stmt)
     return result.scalar_one_or_none()
+
+
+async def update_recurring_transaction(
+    session: AsyncSession,
+    rec_id: int,
+    user_id: int,
+    title: Optional[str] = None,
+    amount: Optional[Decimal | float | str] = None,
+    period: Optional[str] = None,
+    next_run_date: Optional[str] = None,
+    tx_type: Optional[str] = None,
+) -> Optional[RecurringTransaction]:
+    rec = await get_recurring_by_id(session, rec_id, user_id=user_id)
+    if not rec:
+        return None
+    if title is not None and title.strip():
+        rec.title = title.strip()[:120]
+    if amount is not None:
+        dec_amt = _to_exact_decimal(amount)
+        if dec_amt <= Decimal("0.00") or dec_amt > Decimal("999999999.99"):
+            raise ValueError(f"Recurring amount out of range: {dec_amt}")
+        rec.amount = dec_amt
+    if period is not None:
+        if period not in ("daily", "weekly", "monthly", "yearly"):
+            raise ValueError(f"Invalid recurring period: {period}")
+        rec.period = period
+    if next_run_date is not None:
+        date.fromisoformat(next_run_date)
+        rec.next_run_date = next_run_date
+    if tx_type in ("expense", "income"):
+        rec.tx_type = tx_type
+
+    await session.commit()
+    await session.refresh(rec)
+    return rec
 
 
 async def toggle_recurring_transaction(

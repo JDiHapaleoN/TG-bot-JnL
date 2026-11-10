@@ -1,13 +1,14 @@
 """Reply and Inline keyboards for all bot workflows."""
 
-import calendar
 from datetime import date, timedelta
 from typing import List, Optional
 
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     KeyboardButton,
+    Message,
     ReplyKeyboardMarkup,
     WebAppInfo,
 )
@@ -19,9 +20,32 @@ from bot.services.categories import (
     CATEGORIES,
     EXPENSE_CATEGORY_CODES,
     INCOME_CATEGORY_CODES,
+    get_category_info,
+    get_category_label,
 )
 from bot.services.currencies import CURRENCIES, FEATURED_CURRENCY_CODES, format_money
 from bot.services.geo import COUNTRIES, POPULAR_TIMEZONES
+
+
+async def safe_edit_text(
+    message: Message,
+    text: str,
+    reply_markup: Optional[InlineKeyboardMarkup] = None,
+    parse_mode: str = "HTML",
+) -> None:
+    """
+    Safely edit an inline message.
+    Ignores 'message is not modified' errors and falls back to sending a new message
+    if the target message cannot be edited.
+    """
+    try:
+        await message.edit_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+    except TelegramBadRequest as exc:
+        if "message is not modified" in str(exc).lower():
+            return
+        await message.answer(text, reply_markup=reply_markup, parse_mode=parse_mode)
+    except Exception:
+        await message.answer(text, reply_markup=reply_markup, parse_mode=parse_mode)
 
 
 def persistent_reply_kb(lang: str = "ru") -> ReplyKeyboardMarkup:
@@ -93,17 +117,25 @@ def reg_confirm_kb(lang: str = "ru") -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text=t("btn_confirm_reg", lang), callback_data="reg:confirm")],
             [
-                InlineKeyboardButton(text=t("btn_change_country", lang), callback_data="reg:edit_country"),
-                InlineKeyboardButton(text=t("btn_change_currency", lang), callback_data="reg:edit_currency"),
+                InlineKeyboardButton(
+                    text=t("btn_change_country", lang), callback_data="reg:edit_country"
+                ),
+                InlineKeyboardButton(
+                    text=t("btn_change_currency", lang), callback_data="reg:edit_currency"
+                ),
             ],
             [
-                InlineKeyboardButton(text=t("btn_change_tz", lang), callback_data="reg:edit_tz"),
+                InlineKeyboardButton(
+                    text=t("btn_change_tz", lang), callback_data="reg:edit_tz"
+                ),
             ],
         ]
     )
 
 
-def country_picker_kb(prefix: str = "reg:country", lang: str = "ru", back_cb: Optional[str] = None) -> InlineKeyboardMarkup:
+def country_picker_kb(
+    prefix: str = "reg:country", lang: str = "ru", back_cb: Optional[str] = None
+) -> InlineKeyboardMarkup:
     rows: List[List[InlineKeyboardButton]] = []
     featured_codes = [
         "DE", "UZ", "RU", "US", "GB", "CH",
@@ -126,7 +158,9 @@ def country_picker_kb(prefix: str = "reg:country", lang: str = "ru", back_cb: Op
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def currency_picker_kb(prefix: str = "reg:currency", lang: str = "ru", back_cb: Optional[str] = None) -> InlineKeyboardMarkup:
+def currency_picker_kb(
+    prefix: str = "reg:currency", lang: str = "ru", back_cb: Optional[str] = None
+) -> InlineKeyboardMarkup:
     rows: List[List[InlineKeyboardButton]] = []
     row: List[InlineKeyboardButton] = []
     for code in FEATURED_CURRENCY_CODES:
@@ -144,12 +178,16 @@ def currency_picker_kb(prefix: str = "reg:currency", lang: str = "ru", back_cb: 
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def timezone_picker_kb(prefix: str = "reg:tz", lang: str = "ru", back_cb: Optional[str] = None) -> InlineKeyboardMarkup:
+def timezone_picker_kb(
+    prefix: str = "reg:tz", lang: str = "ru", back_cb: Optional[str] = None
+) -> InlineKeyboardMarkup:
     rows: List[List[InlineKeyboardButton]] = []
     row: List[InlineKeyboardButton] = []
     for tz_name in POPULAR_TIMEZONES:
         short_label = tz_name.split("/")[-1].replace("_", " ")
-        row.append(InlineKeyboardButton(text=f"🕒 {short_label}", callback_data=f"{prefix}:{tz_name}"))
+        row.append(
+            InlineKeyboardButton(text=f"🕒 {short_label}", callback_data=f"{prefix}:{tz_name}")
+        )
         if len(row) == 2:
             rows.append(row)
             row = []
@@ -201,6 +239,49 @@ def back_to_menu_kb(lang: str = "ru") -> InlineKeyboardMarkup:
     )
 
 
+def back_to_profile_kb(lang: str = "ru") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=t("btn_back_profile", lang), callback_data="menu:profile")]
+        ]
+    )
+
+
+def add_tx_category_kb(tx_type: str = "expense", lang: str = "ru") -> InlineKeyboardMarkup:
+    """Quick category buttons shown when adding a new expense or income."""
+    codes = INCOME_CATEGORY_CODES if tx_type == "income" else EXPENSE_CATEGORY_CODES
+    rows: List[List[InlineKeyboardButton]] = []
+    row: List[InlineKeyboardButton] = []
+    for code in codes:
+        info = CATEGORIES[code]
+        name = info.name_ru if lang == "ru" else info.name_en
+        row.append(
+            InlineKeyboardButton(
+                text=f"{info.icon} {name}",
+                callback_data=f"tx:newcat:{tx_type}:{code}",
+            )
+        )
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton(text=t("btn_back_menu", lang), callback_data="menu:home")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def selected_new_cat_kb(tx_type: str = "expense", lang: str = "ru") -> InlineKeyboardMarkup:
+    back_cb = "menu:add_income" if tx_type == "income" else "menu:add_expense"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text=t("btn_back_categories", lang), callback_data=back_cb),
+                InlineKeyboardButton(text=t("btn_back_menu", lang), callback_data="menu:home"),
+            ]
+        ]
+    )
+
+
 def tx_saved_kb(tx_id: int, lang: str = "ru") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -216,17 +297,23 @@ def tx_saved_kb(tx_id: int, lang: str = "ru") -> InlineKeyboardMarkup:
     )
 
 
-def category_picker_kb(tx_id: int, tx_type: str = "expense", lang: str = "ru") -> InlineKeyboardMarkup:
+def category_picker_kb(
+    tx_id: int,
+    tx_type: str = "expense",
+    lang: str = "ru",
+    offset: Optional[int] = None,
+) -> InlineKeyboardMarkup:
     codes = INCOME_CATEGORY_CODES if tx_type == "income" else EXPENSE_CATEGORY_CODES
     rows: List[List[InlineKeyboardButton]] = []
     row: List[InlineKeyboardButton] = []
+    suffix = f":{offset}" if offset is not None else ""
     for code in codes:
         info = CATEGORIES[code]
         name = info.name_ru if lang == "ru" else info.name_en
         row.append(
             InlineKeyboardButton(
                 text=f"{info.icon} {name}",
-                callback_data=f"tx:setcat:{tx_id}:{code}",
+                callback_data=f"tx:setcat:{tx_id}:{code}{suffix}",
             )
         )
         if len(row) == 2:
@@ -234,7 +321,16 @@ def category_picker_kb(tx_id: int, tx_type: str = "expense", lang: str = "ru") -
             row = []
     if row:
         rows.append(row)
-    rows.append([InlineKeyboardButton(text=t("btn_back_menu", lang), callback_data="menu:home")])
+
+    nav_row: List[InlineKeyboardButton] = []
+    if offset is not None:
+        nav_row.append(
+            InlineKeyboardButton(
+                text=t("btn_back_tx", lang), callback_data=f"tx:view:{tx_id}:{offset}"
+            )
+        )
+    nav_row.append(InlineKeyboardButton(text=t("btn_back_menu", lang), callback_data="menu:home"))
+    rows.append(nav_row)
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -248,18 +344,18 @@ def history_list_kb(
     rows: List[List[InlineKeyboardButton]] = []
 
     for tx in txs:
-        icon = "📉" if tx.tx_type == "expense" else "📈"
+        cat_code = getattr(tx, "category", "other")
+        cat_info = get_category_info(cat_code, tx_type=tx.tx_type)
         amt_str = format_money(tx.amount, tx.currency, tx_type=tx.tx_type)
-        desc = tx.description or (
-            t("no_description_expense", lang)
-            if tx.tx_type == "expense"
-            else t("no_description_income", lang)
-        )
-        short_desc = desc[:20] + ("…" if len(desc) > 20 else "")
+        if tx.description:
+            desc = f"{cat_info.icon} {tx.description}"
+        else:
+            desc = get_category_label(cat_code, lang=lang, tx_type=tx.tx_type)
+        short_desc = desc[:24] + ("…" if len(desc) > 24 else "")
         rows.append(
             [
                 InlineKeyboardButton(
-                    text=f"{icon} {amt_str} — {short_desc}",
+                    text=f"{amt_str} — {short_desc}",
                     callback_data=f"tx:view:{tx.id}:{offset}",
                 )
             ]
@@ -283,9 +379,15 @@ def tx_detail_kb(tx_id: int, offset: int = 0, lang: str = "ru") -> InlineKeyboar
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text=t("btn_change_cat", lang), callback_data=f"tx:cat:{tx_id}"),
-                InlineKeyboardButton(text=t("btn_edit_tx", lang), callback_data=f"tx:edit:{tx_id}"),
-                InlineKeyboardButton(text=t("btn_delete_tx", lang), callback_data=f"tx:del:{tx_id}"),
+                InlineKeyboardButton(
+                    text=t("btn_change_cat", lang), callback_data=f"tx:cat:{tx_id}:{offset}"
+                ),
+                InlineKeyboardButton(
+                    text=t("btn_edit_tx", lang), callback_data=f"tx:edit:{tx_id}:{offset}"
+                ),
+                InlineKeyboardButton(
+                    text=t("btn_delete_tx", lang), callback_data=f"tx:del:{tx_id}:{offset}"
+                ),
             ],
             [
                 InlineKeyboardButton(
@@ -297,7 +399,34 @@ def tx_detail_kb(tx_id: int, offset: int = 0, lang: str = "ru") -> InlineKeyboar
     )
 
 
-def recurring_menu_kb(items: List[RecurringTransaction], lang: str = "ru") -> InlineKeyboardMarkup:
+def tx_edit_kb(
+    tx_id: int, offset: Optional[int] = None, lang: str = "ru"
+) -> InlineKeyboardMarkup:
+    suffix = f":{offset}" if offset is not None else ""
+    back_off = offset if offset is not None else 0
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=t("btn_change_cat", lang), callback_data=f"tx:cat:{tx_id}{suffix}"
+                ),
+                InlineKeyboardButton(
+                    text=t("btn_flip_type", lang), callback_data=f"tx:flip:{tx_id}{suffix}"
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=t("btn_back_tx", lang), callback_data=f"tx:view:{tx_id}:{back_off}"
+                ),
+                InlineKeyboardButton(text=t("btn_back_menu", lang), callback_data="menu:home"),
+            ],
+        ]
+    )
+
+
+def recurring_menu_kb(
+    items: List[RecurringTransaction], lang: str = "ru"
+) -> InlineKeyboardMarkup:
     rows: List[List[InlineKeyboardButton]] = []
     for rec in items:
         status_icon = "✅" if rec.is_active else "⏸"
@@ -314,15 +443,34 @@ def recurring_menu_kb(items: List[RecurringTransaction], lang: str = "ru") -> In
 
     rows.append(
         [
-            InlineKeyboardButton(text=t("btn_add_rec_expense", lang), callback_data="rec:add:expense"),
-            InlineKeyboardButton(text=t("btn_add_rec_income", lang), callback_data="rec:add:income"),
+            InlineKeyboardButton(
+                text=t("btn_add_rec_expense", lang), callback_data="rec:add:expense"
+            ),
+            InlineKeyboardButton(
+                text=t("btn_add_rec_income", lang), callback_data="rec:add:income"
+            ),
         ]
     )
     rows.append([InlineKeyboardButton(text=t("btn_back_menu", lang), callback_data="menu:home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def recurring_presets_kb(tx_type: str, lang: str = "ru") -> InlineKeyboardMarkup:
+def recurring_cancel_kb(
+    lang: str = "ru", back_cb: str = "menu:recurring"
+) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=t("btn_cancel", lang), callback_data=back_cb)]
+        ]
+    )
+
+
+def recurring_presets_kb(
+    tx_type: str,
+    lang: str = "ru",
+    prefix: str = "rec:preset",
+    back_cb: str = "menu:recurring",
+) -> InlineKeyboardMarkup:
     if tx_type == "income":
         presets = (
             ["Зарплата", "Стипендия", "Арендный доход"]
@@ -338,28 +486,45 @@ def recurring_presets_kb(tx_type: str, lang: str = "ru") -> InlineKeyboardMarkup
 
     rows: List[List[InlineKeyboardButton]] = []
     for p in presets:
-        rows.append([InlineKeyboardButton(text=p, callback_data=f"rec:preset:{p}")])
-    rows.append([InlineKeyboardButton(text=t("btn_cancel", lang), callback_data="menu:recurring")])
+        rows.append([InlineKeyboardButton(text=p, callback_data=f"{prefix}:{p}")])
+    rows.append([InlineKeyboardButton(text=t("btn_cancel", lang), callback_data=back_cb)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def recurring_period_kb(lang: str = "ru") -> InlineKeyboardMarkup:
+def recurring_period_kb(
+    lang: str = "ru",
+    prefix: str = "rec:period",
+    back_cb: str = "menu:recurring",
+) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text=t("period_daily", lang), callback_data="rec:period:daily"),
-                InlineKeyboardButton(text=t("period_weekly", lang), callback_data="rec:period:weekly"),
+                InlineKeyboardButton(
+                    text=t("period_daily", lang), callback_data=f"{prefix}:daily"
+                ),
+                InlineKeyboardButton(
+                    text=t("period_weekly", lang), callback_data=f"{prefix}:weekly"
+                ),
             ],
             [
-                InlineKeyboardButton(text=t("period_monthly", lang), callback_data="rec:period:monthly"),
-                InlineKeyboardButton(text=t("period_yearly", lang), callback_data="rec:period:yearly"),
+                InlineKeyboardButton(
+                    text=t("period_monthly", lang), callback_data=f"{prefix}:monthly"
+                ),
+                InlineKeyboardButton(
+                    text=t("period_yearly", lang), callback_data=f"{prefix}:yearly"
+                ),
             ],
-            [InlineKeyboardButton(text=t("btn_cancel", lang), callback_data="menu:recurring")],
+            [InlineKeyboardButton(text=t("btn_cancel", lang), callback_data=back_cb)],
         ]
     )
 
 
-def recurring_date_kb(today_local: date, lang: str = "ru") -> InlineKeyboardMarkup:
+def recurring_date_kb(
+    today_local: date,
+    lang: str = "ru",
+    prefix: str = "rec:date",
+    back_cb: str = "menu:recurring",
+) -> InlineKeyboardMarkup:
     tomorrow = today_local + timedelta(days=1)
     year = today_local.year + (today_local.month // 12)
     month = (today_local.month % 12) + 1
@@ -370,13 +535,13 @@ def recurring_date_kb(today_local: date, lang: str = "ru") -> InlineKeyboardMark
             [
                 InlineKeyboardButton(
                     text=t("btn_date_today", lang, date=today_local.strftime("%d.%m.%Y")),
-                    callback_data=f"rec:date:{today_local.isoformat()}",
+                    callback_data=f"{prefix}:{today_local.isoformat()}",
                 )
             ],
             [
                 InlineKeyboardButton(
                     text=t("btn_date_tomorrow", lang, date=tomorrow.strftime("%d.%m.%Y")),
-                    callback_data=f"rec:date:{tomorrow.isoformat()}",
+                    callback_data=f"{prefix}:{tomorrow.isoformat()}",
                 )
             ],
             [
@@ -386,10 +551,10 @@ def recurring_date_kb(today_local: date, lang: str = "ru") -> InlineKeyboardMark
                         lang,
                         date=first_next_month.strftime("%d.%m.%Y"),
                     ),
-                    callback_data=f"rec:date:{first_next_month.isoformat()}",
+                    callback_data=f"{prefix}:{first_next_month.isoformat()}",
                 )
             ],
-            [InlineKeyboardButton(text=t("btn_cancel", lang), callback_data="menu:recurring")],
+            [InlineKeyboardButton(text=t("btn_cancel", lang), callback_data=back_cb)],
         ]
     )
 
@@ -398,8 +563,32 @@ def recurring_detail_kb(rec_id: int, lang: str = "ru") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text=t("btn_toggle_rec", lang), callback_data=f"rec:toggle:{rec_id}"),
-                InlineKeyboardButton(text=t("btn_delete_rec", lang), callback_data=f"rec:del:{rec_id}"),
+                InlineKeyboardButton(
+                    text=t("btn_edit_rec_amount", lang),
+                    callback_data=f"rec:edit:amount:{rec_id}",
+                ),
+                InlineKeyboardButton(
+                    text=t("btn_edit_rec_title", lang),
+                    callback_data=f"rec:edit:title:{rec_id}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=t("btn_edit_rec_period", lang),
+                    callback_data=f"rec:edit:period:{rec_id}",
+                ),
+                InlineKeyboardButton(
+                    text=t("btn_edit_rec_date", lang),
+                    callback_data=f"rec:edit:date:{rec_id}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=t("btn_toggle_rec", lang), callback_data=f"rec:toggle:{rec_id}"
+                ),
+                InlineKeyboardButton(
+                    text=t("btn_delete_rec", lang), callback_data=f"rec:del:{rec_id}"
+                ),
             ],
             [
                 InlineKeyboardButton(text="⬅️", callback_data="menu:recurring"),
@@ -409,7 +598,24 @@ def recurring_detail_kb(rec_id: int, lang: str = "ru") -> InlineKeyboardMarkup:
     )
 
 
-def profile_settings_kb(lang: str = "ru") -> InlineKeyboardMarkup:
+def reminder_hour_picker_kb(lang: str = "ru") -> InlineKeyboardMarkup:
+    hours = [9, 12, 15, 18, 20, 21, 22, 23]
+    rows: List[List[InlineKeyboardButton]] = []
+    row: List[InlineKeyboardButton] = []
+    for h in hours:
+        row.append(
+            InlineKeyboardButton(text=f"🕒 {h:02d}:00", callback_data=f"prof:rem_hour:{h}")
+        )
+        if len(row) == 4:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton(text=t("btn_back_profile", lang), callback_data="menu:profile")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def profile_settings_kb(lang: str = "ru", reminder_hour: int = 20) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -417,12 +623,18 @@ def profile_settings_kb(lang: str = "ru") -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text=t("btn_edit_phone", lang), callback_data="prof:edit:phone"),
             ],
             [
-                InlineKeyboardButton(text=t("btn_edit_country", lang), callback_data="prof:edit:country"),
-                InlineKeyboardButton(text=t("btn_edit_currency", lang), callback_data="prof:edit:currency"),
+                InlineKeyboardButton(
+                    text=t("btn_edit_country", lang), callback_data="prof:edit:country"
+                ),
+                InlineKeyboardButton(
+                    text=t("btn_edit_currency", lang), callback_data="prof:edit:currency"
+                ),
             ],
             [
                 InlineKeyboardButton(text=t("btn_edit_tz", lang), callback_data="prof:edit:tz"),
-                InlineKeyboardButton(text=t("btn_edit_lang", lang), callback_data="prof:toggle:lang"),
+                InlineKeyboardButton(
+                    text=t("btn_edit_lang", lang), callback_data="prof:toggle:lang"
+                ),
             ],
             [
                 InlineKeyboardButton(
@@ -433,8 +645,18 @@ def profile_settings_kb(lang: str = "ru") -> InlineKeyboardMarkup:
                 ),
             ],
             [
-                InlineKeyboardButton(text=t("btn_recurring", lang), callback_data="menu:recurring"),
-                InlineKeyboardButton(text=t("btn_export_csv", lang), callback_data="prof:export_csv"),
+                InlineKeyboardButton(
+                    text=t("btn_edit_rem_hour", lang, hour=f"{reminder_hour:02d}"),
+                    callback_data="prof:edit:rem_hour",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=t("btn_recurring", lang), callback_data="menu:recurring"
+                ),
+                InlineKeyboardButton(
+                    text=t("btn_export_csv", lang), callback_data="prof:export_csv"
+                ),
             ],
             [
                 InlineKeyboardButton(
@@ -463,4 +685,3 @@ def confirm_delete_account_kb(lang: str = "ru") -> InlineKeyboardMarkup:
             ],
         ]
     )
-

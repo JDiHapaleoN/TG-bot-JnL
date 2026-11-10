@@ -17,10 +17,9 @@ from bot.database.models import User
 from bot.database.session import async_session_factory
 from bot.i18n.translations import t
 from bot.keyboards.inline import (
-    back_to_menu_kb,
+    add_tx_category_kb,
     main_menu_kb,
-    persistent_reply_kb,
-    profile_settings_kb,
+    safe_edit_text,
 )
 from bot.services.currencies import format_money
 from bot.states.forms import TransactionStates
@@ -86,7 +85,7 @@ async def msg_kb_expense(message: Message, state: FSMContext) -> None:
         await state.set_state(TransactionStates.waiting_expense)
         await message.answer(
             t("prompt_add_expense", user.language),
-            reply_markup=back_to_menu_kb(user.language),
+            reply_markup=add_tx_category_kb(tx_type="expense", lang=user.language),
             parse_mode="HTML",
         )
 
@@ -104,7 +103,7 @@ async def msg_kb_income(message: Message, state: FSMContext) -> None:
         await state.set_state(TransactionStates.waiting_income)
         await message.answer(
             t("prompt_add_income", user.language),
-            reply_markup=back_to_menu_kb(user.language),
+            reply_markup=add_tx_category_kb(tx_type="income", lang=user.language),
             parse_mode="HTML",
         )
 
@@ -114,7 +113,7 @@ async def msg_kb_stats(message: Message, state: FSMContext) -> None:
     await state.clear()
     from bot.handlers.stats import cmd_stats
 
-    await cmd_stats(message)
+    await cmd_stats(message, state)
 
 
 @router.message(F.text.in_(HISTORY_BTN_TEXTS))
@@ -141,12 +140,5 @@ async def cb_menu_home(callback: CallbackQuery, state: FSMContext) -> None:
             return
 
         text, kb = await build_main_menu_payload(session, user)
-        try:
-            await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
-        except Exception:
-            await callback.message.answer(
-                text,
-                reply_markup=persistent_reply_kb(user.language),
-                parse_mode="HTML",
-            )
+        await safe_edit_text(callback.message, text, reply_markup=kb)
         await callback.answer()

@@ -5,7 +5,7 @@ import io
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import BufferedInputFile, CallbackQuery, Message, ReplyKeyboardRemove
+from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
 from bot.database.crud import (
     delete_user_account,
@@ -16,13 +16,25 @@ from bot.database.crud import (
 )
 from bot.database.models import User
 from bot.database.session import async_session_factory
+from bot.handlers.menu import (
+    EXPENSE_BTN_TEXTS,
+    HISTORY_BTN_TEXTS,
+    INCOME_BTN_TEXTS,
+    MENU_BTN_TEXTS,
+    PROFILE_BTN_TEXTS,
+    STATS_BTN_TEXTS,
+)
 from bot.i18n.translations import t
 from bot.keyboards.inline import (
+    back_to_profile_kb,
     confirm_delete_account_kb,
     contact_request_kb,
     country_picker_kb,
     currency_picker_kb,
+    persistent_reply_kb,
     profile_settings_kb,
+    reminder_hour_picker_kb,
+    safe_edit_text,
     timezone_picker_kb,
 )
 from bot.services.currencies import get_currency_label, is_valid_currency
@@ -32,9 +44,19 @@ from bot.services.geo import (
     get_country_profile,
     is_valid_timezone,
 )
+from bot.services.parser import parse_transaction_message
 from bot.states.forms import ProfileStates
 
 router = Router(name="profile")
+
+ALL_NAV_TEXTS = (
+    MENU_BTN_TEXTS
+    | EXPENSE_BTN_TEXTS
+    | INCOME_BTN_TEXTS
+    | STATS_BTN_TEXTS
+    | HISTORY_BTN_TEXTS
+    | PROFILE_BTN_TEXTS
+)
 
 
 def _build_profile_card(user: User) -> str:
@@ -64,7 +86,7 @@ async def cmd_profile(message: Message, state: FSMContext) -> None:
             return
         await message.answer(
             _build_profile_card(user),
-            reply_markup=profile_settings_kb(user.language),
+            reply_markup=profile_settings_kb(user.language, reminder_hour=user.reminder_hour),
             parse_mode="HTML",
         )
 
@@ -77,10 +99,10 @@ async def cb_menu_profile(callback: CallbackQuery, state: FSMContext) -> None:
         if not user or not user.is_registered:
             await callback.answer()
             return
-        await callback.message.edit_text(
+        await safe_edit_text(
+            callback.message,
             _build_profile_card(user),
-            reply_markup=profile_settings_kb(user.language),
-            parse_mode="HTML",
+            reply_markup=profile_settings_kb(user.language, reminder_hour=user.reminder_hour),
         )
         await callback.answer()
 
@@ -93,20 +115,43 @@ async def cb_prof_edit_name(callback: CallbackQuery, state: FSMContext) -> None:
             await callback.answer()
             return
         await state.set_state(ProfileStates.editing_name)
-        await callback.message.answer(t("prompt_new_name", user.language), parse_mode="HTML")
+        await safe_edit_text(
+            callback.message,
+            t("prompt_new_name", user.language),
+            reply_markup=back_to_profile_kb(user.language),
+        )
         await callback.answer()
 
 
-@router.message(ProfileStates.editing_name, F.text)
+@router.message(
+    ProfileStates.editing_name,
+    F.text,
+    ~F.text.in_(ALL_NAV_TEXTS),
+    ~F.text.startswith("/"),
+)
 async def msg_prof_new_name(message: Message, state: FSMContext) -> None:
     new_name = message.text.strip()[:100]
+    cancel_words = {"отмена", "cancel", "❌ отмена", "❌ cancel"}
     async with async_session_factory() as session:
+        if new_name.lower() in cancel_words or not new_name:
+            user = await get_user_by_telegram_id(session, message.from_user.id)
+            await state.clear()
+            if user:
+                await message.answer(
+                    _build_profile_card(user),
+                    reply_markup=profile_settings_kb(
+                        user.language, reminder_hour=user.reminder_hour
+                    ),
+                    parse_mode="HTML",
+                )
+            return
+
         user = await update_user_fields(session, message.from_user.id, name=new_name)
         await state.clear()
         if user:
             await message.answer(
                 f"{t('profile_updated', user.language)}\n\n{_build_profile_card(user)}",
-                reply_markup=profile_settings_kb(user.language),
+                reply_markup=profile_settings_kb(user.language, reminder_hour=user.reminder_hour),
                 parse_mode="HTML",
             )
 
@@ -135,34 +180,65 @@ async def msg_prof_new_phone_contact(message: Message, state: FSMContext) -> Non
     async with async_session_factory() as session:
         user = await update_user_fields(session, message.from_user.id, phone=phone)
         await state.clear()
-        rm = await message.answer("⏳", reply_markup=ReplyKeyboardRemove())
-        try:
-            await rm.delete()
-        except Exception:
-            pass
         if user:
             await message.answer(
+                "📱",
+                reply_markup=persistent_reply_kb(user.language),
+            )
+            await message.answer(
                 f"{t('profile_updated', user.language)}\n\n{_build_profile_card(user)}",
-                reply_markup=profile_settings_kb(user.language),
+                reply_markup=profile_settings_kb(user.language, reminder_hour=user.reminder_hour),
                 parse_mode="HTML",
             )
 
 
-@router.message(ProfileStates.editing_phone, F.text)
+@router.message(
+    ProfileStates.editing_phone,
+    F.text,
+    ~F.text.in_(ALL_NAV_TEXTS),
+    ~F.text.startswith("/"),
+)
 async def msg_prof_new_phone_text(message: Message, state: FSMContext) -> None:
-    phone = message.text.strip()[:32]
+    raw_txt = message.text.strip()
+    skip_or_cancel = {
+        t("btn_skip_phone", "ru").lower(),
+        t("btn_skip_phone", "en").lower(),
+        "skip",
+        "пропустить",
+        "отмена",
+        "cancel",
+        "❌ отмена",
+        "❌ cancel",
+    }
     async with async_session_factory() as session:
+        if raw_txt.lower() in skip_or_cancel:
+            user = await get_user_by_telegram_id(session, message.from_user.id)
+            await state.clear()
+            if user:
+                await message.answer(
+                    "⌨️",
+                    reply_markup=persistent_reply_kb(user.language),
+                )
+                await message.answer(
+                    _build_profile_card(user),
+                    reply_markup=profile_settings_kb(
+                        user.language, reminder_hour=user.reminder_hour
+                    ),
+                    parse_mode="HTML",
+                )
+            return
+
+        phone = raw_txt[:32]
         user = await update_user_fields(session, message.from_user.id, phone=phone)
         await state.clear()
-        rm = await message.answer("⏳", reply_markup=ReplyKeyboardRemove())
-        try:
-            await rm.delete()
-        except Exception:
-            pass
         if user:
             await message.answer(
+                "📱",
+                reply_markup=persistent_reply_kb(user.language),
+            )
+            await message.answer(
                 f"{t('profile_updated', user.language)}\n\n{_build_profile_card(user)}",
-                reply_markup=profile_settings_kb(user.language),
+                reply_markup=profile_settings_kb(user.language, reminder_hour=user.reminder_hour),
                 parse_mode="HTML",
             )
 
@@ -175,12 +251,12 @@ async def cb_prof_edit_country(callback: CallbackQuery, state: FSMContext) -> No
             await callback.answer()
             return
         await state.set_state(ProfileStates.editing_country)
-        await callback.message.edit_text(
+        await safe_edit_text(
+            callback.message,
             t("choose_country_prompt", user.language),
             reply_markup=country_picker_kb(
                 prefix="prof:country", lang=user.language, back_cb="menu:profile"
             ),
-            parse_mode="HTML",
         )
         await callback.answer()
 
@@ -195,13 +271,15 @@ async def cb_prof_country_selected(callback: CallbackQuery, state: FSMContext) -
             callback.from_user.id,
             country_code=profile.code,
             country_name=profile.name_en,
+            currency=profile.currency,
+            timezone=profile.default_timezone,
         )
         await state.clear()
         if user:
-            await callback.message.edit_text(
+            await safe_edit_text(
+                callback.message,
                 _build_profile_card(user),
-                reply_markup=profile_settings_kb(user.language),
-                parse_mode="HTML",
+                reply_markup=profile_settings_kb(user.language, reminder_hour=user.reminder_hour),
             )
         await callback.answer(t("profile_updated", user.language if user else "ru"))
 
@@ -214,12 +292,12 @@ async def cb_prof_edit_currency(callback: CallbackQuery, state: FSMContext) -> N
             await callback.answer()
             return
         await state.set_state(ProfileStates.editing_currency)
-        await callback.message.edit_text(
+        await safe_edit_text(
+            callback.message,
             t("prompt_new_currency", user.language),
             reply_markup=currency_picker_kb(
                 prefix="prof:currency", lang=user.language, back_cb="menu:profile"
             ),
-            parse_mode="HTML",
         )
         await callback.answer()
 
@@ -231,32 +309,53 @@ async def cb_prof_currency_selected(callback: CallbackQuery, state: FSMContext) 
         user = await update_user_fields(session, callback.from_user.id, currency=code)
         await state.clear()
         if user:
-            await callback.message.edit_text(
+            await safe_edit_text(
+                callback.message,
                 _build_profile_card(user),
-                reply_markup=profile_settings_kb(user.language),
-                parse_mode="HTML",
+                reply_markup=profile_settings_kb(user.language, reminder_hour=user.reminder_hour),
             )
         await callback.answer(t("profile_updated", user.language if user else "ru"))
 
 
-@router.message(ProfileStates.editing_currency, F.text)
+@router.message(
+    ProfileStates.editing_currency,
+    F.text,
+    ~F.text.in_(ALL_NAV_TEXTS),
+    ~F.text.startswith("/"),
+)
 async def msg_prof_currency_text(message: Message, state: FSMContext) -> None:
     code = message.text.strip().upper()
+    if is_valid_currency(code):
+        async with async_session_factory() as session:
+            user = await update_user_fields(session, message.from_user.id, currency=code)
+            await state.clear()
+            if user:
+                await message.answer(
+                    f"{t('profile_updated', user.language)}\n\n{_build_profile_card(user)}",
+                    reply_markup=profile_settings_kb(
+                        user.language, reminder_hour=user.reminder_hour
+                    ),
+                    parse_mode="HTML",
+                )
+        return
+
+    # If the user sent a numeric transaction instead of a currency code, log the transaction
+    if parse_transaction_message(message.text) is not None:
+        await state.clear()
+        from bot.handlers.transactions import _handle_transaction_entry
+
+        await _handle_transaction_entry(message, state, default_type="expense")
+        return
+
     async with async_session_factory() as session:
         user = await get_user_by_telegram_id(session, message.from_user.id)
         if not user:
             return
-        if not is_valid_currency(code):
-            await message.answer(t("invalid_currency", user.language), parse_mode="HTML")
-            return
-        user = await update_user_fields(session, message.from_user.id, currency=code)
-        await state.clear()
-        if user:
-            await message.answer(
-                f"{t('profile_updated', user.language)}\n\n{_build_profile_card(user)}",
-                reply_markup=profile_settings_kb(user.language),
-                parse_mode="HTML",
-            )
+        await message.answer(
+            t("invalid_currency", user.language),
+            reply_markup=back_to_profile_kb(user.language),
+            parse_mode="HTML",
+        )
 
 
 @router.callback_query(F.data == "prof:edit:tz")
@@ -267,12 +366,12 @@ async def cb_prof_edit_tz(callback: CallbackQuery, state: FSMContext) -> None:
             await callback.answer()
             return
         await state.set_state(ProfileStates.editing_timezone)
-        await callback.message.edit_text(
+        await safe_edit_text(
+            callback.message,
             t("prompt_new_tz", user.language),
             reply_markup=timezone_picker_kb(
                 prefix="prof:tz", lang=user.language, back_cb="menu:profile"
             ),
-            parse_mode="HTML",
         )
         await callback.answer()
 
@@ -284,36 +383,96 @@ async def cb_prof_tz_selected(callback: CallbackQuery, state: FSMContext) -> Non
         user = await update_user_fields(session, callback.from_user.id, timezone=tz_name)
         await state.clear()
         if user:
-            await callback.message.edit_text(
+            await safe_edit_text(
+                callback.message,
                 _build_profile_card(user),
-                reply_markup=profile_settings_kb(user.language),
-                parse_mode="HTML",
+                reply_markup=profile_settings_kb(user.language, reminder_hour=user.reminder_hour),
             )
         await callback.answer(t("profile_updated", user.language if user else "ru"))
 
 
-@router.message(ProfileStates.editing_timezone, F.text)
+@router.message(
+    ProfileStates.editing_timezone,
+    F.text,
+    ~F.text.in_(ALL_NAV_TEXTS),
+    ~F.text.startswith("/"),
+)
 async def msg_prof_tz_text(message: Message, state: FSMContext) -> None:
     tz_name = message.text.strip()
+    if is_valid_timezone(tz_name):
+        async with async_session_factory() as session:
+            user = await update_user_fields(session, message.from_user.id, timezone=tz_name)
+            await state.clear()
+            if user:
+                await message.answer(
+                    f"{t('profile_updated', user.language)}\n\n{_build_profile_card(user)}",
+                    reply_markup=profile_settings_kb(
+                        user.language, reminder_hour=user.reminder_hour
+                    ),
+                    parse_mode="HTML",
+                )
+        return
+
+    if parse_transaction_message(message.text) is not None:
+        await state.clear()
+        from bot.handlers.transactions import _handle_transaction_entry
+
+        await _handle_transaction_entry(message, state, default_type="expense")
+        return
+
     async with async_session_factory() as session:
         user = await get_user_by_telegram_id(session, message.from_user.id)
         if not user:
             return
-        if not is_valid_timezone(tz_name):
-            await message.answer(t("invalid_timezone", user.language), parse_mode="HTML")
+        await message.answer(
+            t("invalid_timezone", user.language),
+            reply_markup=back_to_profile_kb(user.language),
+            parse_mode="HTML",
+        )
+
+
+@router.callback_query(F.data == "prof:edit:rem_hour")
+async def cb_prof_edit_rem_hour(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    async with async_session_factory() as session:
+        user = await get_user_by_telegram_id(session, callback.from_user.id)
+        if not user:
+            await callback.answer()
             return
-        user = await update_user_fields(session, message.from_user.id, timezone=tz_name)
-        await state.clear()
+        await safe_edit_text(
+            callback.message,
+            t("prompt_new_rem_hour", user.language),
+            reply_markup=reminder_hour_picker_kb(user.language),
+        )
+        await callback.answer()
+
+
+@router.callback_query(F.data.startswith("prof:rem_hour:"))
+async def cb_prof_rem_hour_selected(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    try:
+        hour = max(0, min(23, int(callback.data.split(":")[-1])))
+    except ValueError:
+        hour = 20
+    async with async_session_factory() as session:
+        user = await update_user_fields(
+            session,
+            callback.from_user.id,
+            reminder_hour=hour,
+            daily_reminder=True,
+        )
         if user:
-            await message.answer(
-                f"{t('profile_updated', user.language)}\n\n{_build_profile_card(user)}",
-                reply_markup=profile_settings_kb(user.language),
-                parse_mode="HTML",
+            await safe_edit_text(
+                callback.message,
+                _build_profile_card(user),
+                reply_markup=profile_settings_kb(user.language, reminder_hour=user.reminder_hour),
             )
+        await callback.answer(t("profile_updated", user.language if user else "ru"))
 
 
 @router.callback_query(F.data.startswith("prof:toggle:"))
-async def cb_prof_toggle_setting(callback: CallbackQuery) -> None:
+async def cb_prof_toggle_setting(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
     field = callback.data.split(":")[-1]
     async with async_session_factory() as session:
         user = await get_user_by_telegram_id(session, callback.from_user.id)
@@ -321,9 +480,11 @@ async def cb_prof_toggle_setting(callback: CallbackQuery) -> None:
             await callback.answer()
             return
 
+        lang_changed = False
         if field == "lang":
             new_lang = "en" if user.language == "ru" else "ru"
             user = await update_user_fields(session, user.telegram_id, language=new_lang)
+            lang_changed = True
         elif field == "notify_rec":
             user = await update_user_fields(
                 session, user.telegram_id, notify_recurring=not user.notify_recurring
@@ -334,12 +495,19 @@ async def cb_prof_toggle_setting(callback: CallbackQuery) -> None:
             )
 
         if user:
-            await callback.message.edit_text(
+            await safe_edit_text(
+                callback.message,
                 _build_profile_card(user),
-                reply_markup=profile_settings_kb(user.language),
-                parse_mode="HTML",
+                reply_markup=profile_settings_kb(user.language, reminder_hour=user.reminder_hour),
             )
-        await callback.answer()
+            if lang_changed:
+                await callback.message.answer(
+                    "🌐",
+                    reply_markup=persistent_reply_kb(user.language),
+                )
+            await callback.answer(t("profile_updated", user.language))
+        else:
+            await callback.answer()
 
 
 @router.callback_query(F.data == "prof:export_csv")
@@ -352,7 +520,9 @@ async def cb_prof_export_csv(callback: CallbackQuery) -> None:
         txs, _ = await get_user_transactions(session, user.id, limit=5000, offset=0)
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(["ID", "Date", "Time", "Type", "Amount", "Currency", "Description"])
+        writer.writerow(
+            ["ID", "Date", "Time", "Type", "Category", "Amount", "Currency", "Description"]
+        )
         for tx in txs:
             dt_local = to_local_datetime(tx.created_at, user.timezone)
             writer.writerow(
@@ -361,6 +531,7 @@ async def cb_prof_export_csv(callback: CallbackQuery) -> None:
                     dt_local.strftime("%Y-%m-%d"),
                     dt_local.strftime("%H:%M:%S"),
                     tx.tx_type,
+                    getattr(tx, "category", "other"),
                     f"{tx.amount:.2f}",
                     tx.currency,
                     tx.description,
@@ -373,16 +544,17 @@ async def cb_prof_export_csv(callback: CallbackQuery) -> None:
 
 
 @router.callback_query(F.data == "prof:delete_confirm")
-async def cb_prof_delete_confirm(callback: CallbackQuery) -> None:
+async def cb_prof_delete_confirm(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
     async with async_session_factory() as session:
         user = await get_user_by_telegram_id(session, callback.from_user.id)
         if not user:
             await callback.answer()
             return
-        await callback.message.edit_text(
+        await safe_edit_text(
+            callback.message,
             t("confirm_delete_account", user.language),
             reply_markup=confirm_delete_account_kb(user.language),
-            parse_mode="HTML",
         )
         await callback.answer()
 
@@ -394,6 +566,5 @@ async def cb_prof_delete_execute(callback: CallbackQuery, state: FSMContext) -> 
         lang = user.language if user else "ru"
         await delete_user_account(session, callback.from_user.id)
         await state.clear()
-        await callback.message.edit_text(t("account_deleted", lang), parse_mode="HTML")
+        await safe_edit_text(callback.message, t("account_deleted", lang))
         await callback.answer()
-

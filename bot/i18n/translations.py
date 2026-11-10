@@ -306,6 +306,38 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "btn_change_cat": "🏷 Категория",
         "choose_cat_prompt": "🏷 <b>Выберите категорию для операции #{tx_id}:</b>",
         "cat_updated": "✅ Категория изменена на: <b>{category}</b>",
+        "prompt_add_expense_cat": (
+            "➖ <b>Добавление расхода — {category}</b>\n\n"
+            "Отправьте сумму и (по желанию) описание:\n"
+            "• <code>5</code>\n"
+            "• <code>12.50 Комментарий</code>"
+        ),
+        "prompt_add_income_cat": (
+            "➕ <b>Добавление дохода — {category}</b>\n\n"
+            "Отправьте сумму и (по желанию) описание:\n"
+            "• <code>1500</code>\n"
+            "• <code>200 Комментарий</code>"
+        ),
+        "btn_back_categories": "⬅️ К категориям",
+        "btn_back_tx": "⬅️ К операции",
+        "btn_flip_type": "🔄 Сменить тип (Расход ↔ Доход)",
+        "tx_type_flipped": "✅ Тип операции изменён!",
+        "btn_edit_rec_amount": "💰 Сумма",
+        "btn_edit_rec_title": "✏️ Название",
+        "btn_edit_rec_period": "🔁 Период",
+        "btn_edit_rec_date": "📅 Дата",
+        "rec_updated": "✅ Регулярная операция обновлена!",
+        "rec_edit_title_prompt": "✏️ <b>Изменение названия для «{title}»</b>\n\nВведите новое название или выберите шаблон:",
+        "rec_edit_amount_prompt": "💰 <b>Изменение суммы для «{title}»</b>\n\nВведите новую сумму ({currency}):",
+        "rec_edit_period_prompt": "🔁 <b>Выберите новую периодичность для «{title}»:</b>",
+        "rec_edit_date_prompt": (
+            "🗓 <b>Изменение следующей даты для «{title}»</b>\n\n"
+            "Введите дату в формате <code>ДД.ММ.ГГГГ</code> или выберите вариант ниже:"
+        ),
+        "btn_back_rec": "⬅️ Назад",
+        "btn_back_profile": "⬅️ Назад в профиль",
+        "btn_edit_rem_hour": "🕒 Время напоминания ({hour}:00)",
+        "prompt_new_rem_hour": "🕒 <b>Выберите время ежедневного напоминания:</b>",
     },
     "en": {
         # Registration
@@ -610,6 +642,38 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "btn_change_cat": "🏷 Category",
         "choose_cat_prompt": "🏷 <b>Select category for transaction #{tx_id}:</b>",
         "cat_updated": "✅ Category updated to: <b>{category}</b>",
+        "prompt_add_expense_cat": (
+            "➖ <b>Add Expense — {category}</b>\n\n"
+            "Send the amount and (optionally) a description:\n"
+            "• <code>5</code>\n"
+            "• <code>12.50 Note</code>"
+        ),
+        "prompt_add_income_cat": (
+            "➕ <b>Add Income — {category}</b>\n\n"
+            "Send the amount and (optionally) a description:\n"
+            "• <code>1500</code>\n"
+            "• <code>200 Note</code>"
+        ),
+        "btn_back_categories": "⬅️ Back to Categories",
+        "btn_back_tx": "⬅️ Back to Transaction",
+        "btn_flip_type": "🔄 Switch Type (Expense ↔ Income)",
+        "tx_type_flipped": "✅ Transaction type updated!",
+        "btn_edit_rec_amount": "💰 Amount",
+        "btn_edit_rec_title": "✏️ Title",
+        "btn_edit_rec_period": "🔁 Period",
+        "btn_edit_rec_date": "📅 Date",
+        "rec_updated": "✅ Recurring operation updated!",
+        "rec_edit_title_prompt": "✏️ <b>Edit Title for “{title}”</b>\n\nEnter a new title or choose a preset:",
+        "rec_edit_amount_prompt": "💰 <b>Edit Amount for “{title}”</b>\n\nEnter the new amount ({currency}):",
+        "rec_edit_period_prompt": "🔁 <b>Select new frequency for “{title}”:</b>",
+        "rec_edit_date_prompt": (
+            "🗓 <b>Edit Next Date for “{title}”</b>\n\n"
+            "Enter a date in <code>DD.MM.YYYY</code> format or pick an option below:"
+        ),
+        "btn_back_rec": "⬅️ Back",
+        "btn_back_profile": "⬅️ Back to Profile",
+        "btn_edit_rem_hour": "🕒 Reminder Time ({hour}:00)",
+        "prompt_new_rem_hour": "🕒 <b>Select your daily reminder time:</b>",
     },
 }
 

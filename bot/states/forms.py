@@ -25,6 +25,9 @@ class RecurringStates(StatesGroup):
     waiting_amount = State()
     waiting_period = State()
     waiting_date = State()
+    editing_title = State()
+    editing_amount = State()
+    editing_date = State()
 
 
 class ProfileStates(StatesGroup):
