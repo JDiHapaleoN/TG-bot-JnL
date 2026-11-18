@@ -37,3 +37,8 @@ class ProfileStates(StatesGroup):
     editing_currency = State()
     editing_timezone = State()
 
+
+class PartnerStates(StatesGroup):
+    waiting_code = State()
+
+

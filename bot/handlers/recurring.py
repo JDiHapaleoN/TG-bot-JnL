@@ -23,14 +23,7 @@ from bot.database.crud import (
 )
 from bot.database.models import RecurringTransaction, User
 from bot.database.session import async_session_factory
-from bot.handlers.menu import (
-    EXPENSE_BTN_TEXTS,
-    HISTORY_BTN_TEXTS,
-    INCOME_BTN_TEXTS,
-    MENU_BTN_TEXTS,
-    PROFILE_BTN_TEXTS,
-    STATS_BTN_TEXTS,
-)
+from bot.handlers.menu import ALL_NAV_TEXTS
 from bot.i18n.translations import period_label, t
 from bot.keyboards.inline import (
     recurring_cancel_kb,
@@ -46,15 +39,6 @@ from bot.services.parser import parse_transaction_message
 from bot.states.forms import RecurringStates
 
 router = Router(name="recurring")
-
-ALL_NAV_TEXTS = (
-    MENU_BTN_TEXTS
-    | EXPENSE_BTN_TEXTS
-    | INCOME_BTN_TEXTS
-    | STATS_BTN_TEXTS
-    | HISTORY_BTN_TEXTS
-    | PROFILE_BTN_TEXTS
-)
 
 _NUMBER_EXTRACT_RE = re.compile(r"(\d+(?:[.,]\d{1,2})?)")
 
@@ -196,7 +180,11 @@ async def cb_rec_preset_title(callback: CallbackQuery, state: FSMContext) -> Non
             currency = user.currency if user else "EUR"
 
     if not tx_type:
-        income_presets = {"Зарплата", "Стипендия", "Арендный доход", "Salary", "Stipend", "Rental Income"}
+        income_presets = {
+            "Зарплата", "Стипендия", "Арендный доход",
+            "Salary", "Stipend", "Rental Income",
+            "Gehalt", "Stipendium", "Mieteinnahmen",
+        }
         tx_type = "income" if title in income_presets else "expense"
 
     await state.update_data(

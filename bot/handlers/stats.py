@@ -1,4 +1,4 @@
-"""Statistics view handlers with category breakdown."""
+"""Statistics view handlers with Cash/Card and Category breakdown."""
 
 from typing import Optional
 
@@ -23,10 +23,10 @@ from bot.services.geo import format_timezone_with_offset
 router = Router(name="stats")
 
 
-async def _build_stats_text(session, user: User) -> str:
+async def _build_stats_text(session, user: User, lang_override: Optional[str] = None) -> str:
     await process_due_recurring_for_user(session, user)
     stats = await get_user_statistics(session, user)
-    lang = user.language
+    lang = lang_override or user.language
     cur = user.currency
 
     base = t(
@@ -45,12 +45,24 @@ async def _build_stats_text(session, user: User) -> str:
         timezone=format_timezone_with_offset(user.timezone),
     )
 
+    if stats.month_expense > 0:
+        card_pct = int(round((stats.month_card_expense / stats.month_expense) * 100))
+        cash_pct = int(round((stats.month_cash_expense / stats.month_expense) * 100))
+    else:
+        card_pct = 0
+        cash_pct = 0
+
+    base += t(
+        "stats_payment_breakdown",
+        lang,
+        month_card=format_money(stats.month_card_expense, cur, tx_type="expense"),
+        card_pct=card_pct,
+        month_cash=format_money(stats.month_cash_expense, cur, tx_type="expense"),
+        cash_pct=cash_pct,
+    )
+
     if stats.month_by_category and stats.month_expense > 0:
-        header = (
-            "\n\n🏷 <b>По категориям (за месяц):</b>"
-            if lang == "ru"
-            else "\n\n🏷 <b>By Category (This Month):</b>"
-        )
+        header = t("stats_category_header", lang)
         cat_lines = [header]
         sorted_cats = sorted(
             stats.month_by_category.items(), key=lambda kv: kv[1], reverse=True

@@ -1,4 +1,4 @@
-"""Main menu rendering and persistent Reply Keyboard navigation handlers."""
+"""Main menu rendering and persistent Reply Keyboard navigation handlers (RU / EN / DE)."""
 
 from typing import Tuple
 
@@ -26,12 +26,23 @@ from bot.states.forms import TransactionStates
 
 router = Router(name="menu")
 
-MENU_BTN_TEXTS = {t("kb_menu", "ru"), t("kb_menu", "en")}
-EXPENSE_BTN_TEXTS = {t("kb_expense", "ru"), t("kb_expense", "en")}
-INCOME_BTN_TEXTS = {t("kb_income", "ru"), t("kb_income", "en")}
-STATS_BTN_TEXTS = {t("kb_stats", "ru"), t("kb_stats", "en")}
-HISTORY_BTN_TEXTS = {t("kb_history", "ru"), t("kb_history", "en")}
-PROFILE_BTN_TEXTS = {t("kb_profile", "ru"), t("kb_profile", "en")}
+MENU_BTN_TEXTS = {t("kb_menu", "ru"), t("kb_menu", "en"), t("kb_menu", "de")}
+EXPENSE_BTN_TEXTS = {t("kb_expense", "ru"), t("kb_expense", "en"), t("kb_expense", "de")}
+INCOME_BTN_TEXTS = {t("kb_income", "ru"), t("kb_income", "en"), t("kb_income", "de")}
+STATS_BTN_TEXTS = {t("kb_stats", "ru"), t("kb_stats", "en"), t("kb_stats", "de")}
+HISTORY_BTN_TEXTS = {t("kb_history", "ru"), t("kb_history", "en"), t("kb_history", "de")}
+PARTNER_BTN_TEXTS = {t("kb_partner", "ru"), t("kb_partner", "en"), t("kb_partner", "de")}
+PROFILE_BTN_TEXTS = {t("kb_profile", "ru"), t("kb_profile", "en"), t("kb_profile", "de")}
+
+ALL_NAV_TEXTS = (
+    MENU_BTN_TEXTS
+    | EXPENSE_BTN_TEXTS
+    | INCOME_BTN_TEXTS
+    | STATS_BTN_TEXTS
+    | HISTORY_BTN_TEXTS
+    | PARTNER_BTN_TEXTS
+    | PROFILE_BTN_TEXTS
+)
 
 
 async def build_main_menu_payload(
@@ -121,6 +132,13 @@ async def msg_kb_history(message: Message, state: FSMContext) -> None:
     from bot.handlers.transactions import cmd_history
 
     await cmd_history(message, state)
+
+
+@router.message(F.text.in_(PARTNER_BTN_TEXTS))
+async def msg_kb_partner(message: Message, state: FSMContext) -> None:
+    from bot.handlers.partner import cmd_partner
+
+    await cmd_partner(message, state)
 
 
 @router.message(F.text.in_(PROFILE_BTN_TEXTS))

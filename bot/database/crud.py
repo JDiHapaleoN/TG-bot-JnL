@@ -1,6 +1,7 @@
 """Database CRUD operations, idempotency guarantees, and exact Decimal financial statistics."""
 
 import calendar
+import secrets
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -17,7 +18,7 @@ from bot.database.models import (
     Transaction,
     User,
 )
-from bot.services.categories import detect_category
+from bot.services.categories import detect_category, detect_payment_method
 
 
 @dataclass
@@ -33,6 +34,10 @@ class FinancialStats:
     month_expense: Decimal
     month_income: Decimal
     month_by_category: Dict[str, Decimal] = field(default_factory=dict)
+    month_card_expense: Decimal = Decimal("0.00")
+    month_cash_expense: Decimal = Decimal("0.00")
+    total_card_expense: Decimal = Decimal("0.00")
+    total_cash_expense: Decimal = Decimal("0.00")
 
 
 def get_user_tz(tz_name: str) -> ZoneInfo:
@@ -140,6 +145,96 @@ async def get_user_by_id(session: AsyncSession, user_id: int) -> Optional[User]:
     return result.scalar_one_or_none()
 
 
+_PARTNER_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+
+
+def _make_partner_code_candidate() -> str:
+    suffix = "".join(secrets.choice(_PARTNER_ALPHABET) for _ in range(6))
+    return f"JNL-{suffix}"
+
+
+async def ensure_user_partner_code(session: AsyncSession, user: User) -> str:
+    """Return user's personal partner code, generating and saving one if not yet set."""
+    if getattr(user, "partner_code", None):
+        return user.partner_code
+
+    for _ in range(10):
+        candidate = _make_partner_code_candidate()
+        existing = await session.execute(
+            select(User.id).where(User.partner_code == candidate)
+        )
+        if existing.scalar_one_or_none() is None:
+            user.partner_code = candidate
+            try:
+                await session.commit()
+                await session.refresh(user)
+                return user.partner_code
+            except IntegrityError:
+                await session.rollback()
+                continue
+
+    fallback = f"JNL-{user.telegram_id}"
+    user.partner_code = fallback[:32]
+    await session.commit()
+    await session.refresh(user)
+    return user.partner_code
+
+
+async def get_user_by_partner_code(
+    session: AsyncSession, raw_code: str
+) -> Optional[User]:
+    cleaned = (raw_code or "").strip().upper().replace(" ", "")
+    if not cleaned:
+        return None
+    candidates = [cleaned]
+    if not cleaned.startswith("JNL-"):
+        candidates.append(f"JNL-{cleaned}")
+    else:
+        candidates.append(cleaned[4:])
+
+    stmt = select(User).where(User.partner_code.in_(candidates))
+    res = await session.execute(stmt)
+    return res.scalar_one_or_none()
+
+
+async def link_partners_permanently(
+    session: AsyncSession, user_telegram_id: int, raw_partner_code: str
+) -> Tuple[str, Optional[User]]:
+    """
+    Permanently link two user accounts using a partner code.
+    Returns (status, partner_user) where status is one of:
+    'ok', 'already_linked', 'invalid_code', 'self_code', 'target_linked'.
+    """
+    user = await get_user_by_telegram_id(session, user_telegram_id)
+    if not user:
+        return "invalid_code", None
+
+    if user.partner_id is not None:
+        existing_partner = await get_user_by_id(session, user.partner_id)
+        if existing_partner is not None:
+            return "already_linked", existing_partner
+
+    target = await get_user_by_partner_code(session, raw_partner_code)
+    if target is None or not target.is_registered:
+        return "invalid_code", None
+
+    if target.id == user.id:
+        return "self_code", None
+
+    if target.partner_id is not None and target.partner_id != user.id:
+        other_partner = await get_user_by_id(session, target.partner_id)
+        if other_partner is not None:
+            return "target_linked", None
+
+    await ensure_user_partner_code(session, user)
+    user.partner_id = target.id
+    target.partner_id = user.id
+    await session.commit()
+    await session.refresh(user)
+    await session.refresh(target)
+    return "ok", target
+
+
 async def create_or_update_user(
     session: AsyncSession,
     telegram_id: int,
@@ -163,6 +258,7 @@ async def create_or_update_user(
             currency=(currency or "EUR").upper()[:8],
             timezone=(tz_name or "Europe/Berlin")[:64],
             language=(language or "ru")[:8],
+            partner_code=_make_partner_code_candidate(),
             is_registered=is_registered,
         )
         session.add(user)
@@ -175,6 +271,9 @@ async def create_or_update_user(
             user = await get_user_by_telegram_id(session, telegram_id)
             if user is None:
                 raise
+
+    if not getattr(user, "partner_code", None):
+        user.partner_code = _make_partner_code_candidate()
 
     old_currency = user.currency
     new_currency = (currency or user.currency or "EUR").upper()[:8]
@@ -275,6 +374,7 @@ async def add_transaction(
     currency: str,
     description: str = "",
     category: Optional[str] = None,
+    payment_method: Optional[str] = None,
     recurring_id: Optional[int] = None,
     idempotency_key: Optional[str] = None,
     created_at: Optional[datetime] = None,
@@ -293,6 +393,8 @@ async def add_transaction(
 
     clean_desc = (description or "").strip()[:255]
     resolved_cat = category or detect_category(clean_desc, tx_type=tx_type)
+    raw_method = payment_method or detect_payment_method(clean_desc, default="card")
+    resolved_method = "cash" if str(raw_method).lower() == "cash" else "card"
 
     tx = Transaction(
         user_id=user_id,
@@ -300,6 +402,7 @@ async def add_transaction(
         amount=dec_amount,
         currency=(currency or "EUR").upper().strip()[:8],
         category=resolved_cat,
+        payment_method=resolved_method,
         description=clean_desc,
         recurring_id=recurring_id,
         idempotency_key=idempotency_key,
@@ -342,6 +445,7 @@ async def update_transaction(
     description: Optional[str] = None,
     tx_type: Optional[str] = None,
     category: Optional[str] = None,
+    payment_method: Optional[str] = None,
 ) -> Optional[Transaction]:
     tx = await get_transaction_by_id(session, tx_id, user_id=user_id)
     if not tx:
@@ -359,6 +463,8 @@ async def update_transaction(
             tx.category = detect_category(tx.description, tx_type=tx.tx_type)
     if category is not None:
         tx.category = category.strip()[:64]
+    if payment_method in ("card", "cash"):
+        tx.payment_method = payment_method
 
     await session.commit()
     await session.refresh(tx)
@@ -446,16 +552,25 @@ async def get_user_statistics(
     month_expense = zero
     month_income = zero
     month_by_category: Dict[str, Decimal] = {}
+    month_card_expense = zero
+    month_cash_expense = zero
+    total_card_expense = zero
+    total_cash_expense = zero
 
     for tx in txs:
         amt = _to_exact_decimal(tx.amount)
         tx_local = to_local_datetime(tx.created_at, user.timezone)
         is_inc = tx.tx_type == "income"
+        pay_method = getattr(tx, "payment_method", "card") or "card"
 
         if is_inc:
             total_income += amt
         else:
             total_expense += amt
+            if pay_method == "cash":
+                total_cash_expense += amt
+            else:
+                total_card_expense += amt
 
         if tx_local >= start_of_day_local:
             if is_inc:
@@ -474,6 +589,10 @@ async def get_user_statistics(
                 month_income += amt
             else:
                 month_expense += amt
+                if pay_method == "cash":
+                    month_cash_expense += amt
+                else:
+                    month_card_expense += amt
                 cat_key = getattr(tx, "category", None) or "other"
                 month_by_category[cat_key] = (
                     month_by_category.get(cat_key, zero) + amt
@@ -494,6 +613,10 @@ async def get_user_statistics(
         month_expense=month_expense.quantize(Decimal("0.01")),
         month_income=month_income.quantize(Decimal("0.01")),
         month_by_category=month_by_category,
+        month_card_expense=month_card_expense.quantize(Decimal("0.01")),
+        month_cash_expense=month_cash_expense.quantize(Decimal("0.01")),
+        total_card_expense=total_card_expense.quantize(Decimal("0.01")),
+        total_cash_expense=total_cash_expense.quantize(Decimal("0.01")),
     )
 
 

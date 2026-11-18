@@ -251,6 +251,41 @@ def run_safe_migrations(sync_conn: Connection) -> None:
     if 3 not in applied:
         _record_migration(sync_conn, 3, "create_processed_updates_table")
 
+    # Migration 4: Ensure 'partner_code' and 'partner_id' exist on 'users'
+    user_cols = _get_existing_columns(sync_conn, "users")
+    if user_cols:
+        if "partner_code" not in user_cols:
+            logger.info("Applying migration: add 'partner_code' column to 'users'")
+            sync_conn.execute(
+                text("ALTER TABLE users ADD COLUMN partner_code VARCHAR(32)")
+            )
+        if "partner_id" not in user_cols:
+            logger.info("Applying migration: add 'partner_id' column to 'users'")
+            sync_conn.execute(
+                text("ALTER TABLE users ADD COLUMN partner_id INTEGER REFERENCES users(id)")
+            )
+        sync_conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_partner_code "
+                "ON users (partner_code)"
+            )
+        )
+    if 4 not in applied:
+        _record_migration(sync_conn, 4, "add_users_partner_columns")
+
+    # Migration 5: Ensure 'payment_method' exists on 'transactions'
+    tx_cols = _get_existing_columns(sync_conn, "transactions")
+    if tx_cols:
+        if "payment_method" not in tx_cols:
+            logger.info("Applying migration: add 'payment_method' column to 'transactions'")
+            sync_conn.execute(
+                text(
+                    "ALTER TABLE transactions ADD COLUMN payment_method VARCHAR(16) NOT NULL DEFAULT 'card'"
+                )
+            )
+    if 5 not in applied:
+        _record_migration(sync_conn, 5, "add_transactions_payment_method")
+
 
 def test_migration_on_isolated_copy(source_db_path: Optional[Path] = None) -> bool:
     """

@@ -16,21 +16,15 @@ from bot.database.crud import (
 )
 from bot.database.models import User
 from bot.database.session import async_session_factory
-from bot.handlers.menu import (
-    EXPENSE_BTN_TEXTS,
-    HISTORY_BTN_TEXTS,
-    INCOME_BTN_TEXTS,
-    MENU_BTN_TEXTS,
-    PROFILE_BTN_TEXTS,
-    STATS_BTN_TEXTS,
-)
-from bot.i18n.translations import t
+from bot.handlers.menu import ALL_NAV_TEXTS
+from bot.i18n.translations import normalize_lang, t
 from bot.keyboards.inline import (
     back_to_profile_kb,
     confirm_delete_account_kb,
     contact_request_kb,
     country_picker_kb,
     currency_picker_kb,
+    language_picker_kb,
     persistent_reply_kb,
     profile_settings_kb,
     reminder_hour_picker_kb,
@@ -48,15 +42,6 @@ from bot.services.parser import parse_transaction_message
 from bot.states.forms import ProfileStates
 
 router = Router(name="profile")
-
-ALL_NAV_TEXTS = (
-    MENU_BTN_TEXTS
-    | EXPENSE_BTN_TEXTS
-    | INCOME_BTN_TEXTS
-    | STATS_BTN_TEXTS
-    | HISTORY_BTN_TEXTS
-    | PROFILE_BTN_TEXTS
-)
 
 
 def _build_profile_card(user: User) -> str:
@@ -203,12 +188,16 @@ async def msg_prof_new_phone_text(message: Message, state: FSMContext) -> None:
     skip_or_cancel = {
         t("btn_skip_phone", "ru").lower(),
         t("btn_skip_phone", "en").lower(),
+        t("btn_skip_phone", "de").lower(),
         "skip",
         "пропустить",
+        "überspringen",
         "отмена",
         "cancel",
+        "abbrechen",
         "❌ отмена",
         "❌ cancel",
+        "❌ abbrechen",
     }
     async with async_session_factory() as session:
         if raw_txt.lower() in skip_or_cancel:
@@ -470,6 +459,31 @@ async def cb_prof_rem_hour_selected(callback: CallbackQuery, state: FSMContext) 
         await callback.answer(t("profile_updated", user.language if user else "ru"))
 
 
+@router.callback_query(F.data.startswith("prof:lang:"))
+async def cb_prof_set_language(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    new_lang = normalize_lang(callback.data.split(":")[-1])
+    async with async_session_factory() as session:
+        user = await update_user_fields(
+            session, callback.from_user.id, language=new_lang
+        )
+        if user:
+            await safe_edit_text(
+                callback.message,
+                _build_profile_card(user),
+                reply_markup=profile_settings_kb(
+                    user.language, reminder_hour=user.reminder_hour
+                ),
+            )
+            await callback.message.answer(
+                "🌐",
+                reply_markup=persistent_reply_kb(user.language),
+            )
+            await callback.answer(t("profile_updated", user.language))
+        else:
+            await callback.answer()
+
+
 @router.callback_query(F.data.startswith("prof:toggle:"))
 async def cb_prof_toggle_setting(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
@@ -480,11 +494,14 @@ async def cb_prof_toggle_setting(callback: CallbackQuery, state: FSMContext) -> 
             await callback.answer()
             return
 
-        lang_changed = False
         if field == "lang":
-            new_lang = "en" if user.language == "ru" else "ru"
-            user = await update_user_fields(session, user.telegram_id, language=new_lang)
-            lang_changed = True
+            await safe_edit_text(
+                callback.message,
+                t("prompt_choose_lang", user.language),
+                reply_markup=language_picker_kb(user.language),
+            )
+            await callback.answer()
+            return
         elif field == "notify_rec":
             user = await update_user_fields(
                 session, user.telegram_id, notify_recurring=not user.notify_recurring
@@ -500,11 +517,6 @@ async def cb_prof_toggle_setting(callback: CallbackQuery, state: FSMContext) -> 
                 _build_profile_card(user),
                 reply_markup=profile_settings_kb(user.language, reminder_hour=user.reminder_hour),
             )
-            if lang_changed:
-                await callback.message.answer(
-                    "🌐",
-                    reply_markup=persistent_reply_kb(user.language),
-                )
             await callback.answer(t("profile_updated", user.language))
         else:
             await callback.answer()
@@ -521,7 +533,17 @@ async def cb_prof_export_csv(callback: CallbackQuery) -> None:
         output = io.StringIO()
         writer = csv.writer(output)
         writer.writerow(
-            ["ID", "Date", "Time", "Type", "Category", "Amount", "Currency", "Description"]
+            [
+                "ID",
+                "Date",
+                "Time",
+                "Type",
+                "Category",
+                "PaymentMethod",
+                "Amount",
+                "Currency",
+                "Description",
+            ]
         )
         for tx in txs:
             dt_local = to_local_datetime(tx.created_at, user.timezone)
@@ -532,6 +554,7 @@ async def cb_prof_export_csv(callback: CallbackQuery) -> None:
                     dt_local.strftime("%H:%M:%S"),
                     tx.tx_type,
                     getattr(tx, "category", "other"),
+                    getattr(tx, "payment_method", "card"),
                     f"{tx.amount:.2f}",
                     tx.currency,
                     tx.description,

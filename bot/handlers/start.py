@@ -14,15 +14,10 @@ from bot.database.crud import (
 )
 from bot.database.session import async_session_factory
 from bot.handlers.menu import (
-    EXPENSE_BTN_TEXTS,
-    HISTORY_BTN_TEXTS,
-    INCOME_BTN_TEXTS,
-    MENU_BTN_TEXTS,
-    PROFILE_BTN_TEXTS,
-    STATS_BTN_TEXTS,
+    ALL_NAV_TEXTS,
     build_main_menu_payload,
 )
-from bot.i18n.translations import t
+from bot.i18n.translations import normalize_lang, t
 from bot.keyboards.inline import (
     contact_request_kb,
     country_picker_kb,
@@ -46,15 +41,6 @@ from bot.services.geo import (
 from bot.states.forms import RegistrationStates
 
 router = Router(name="start")
-
-ALL_NAV_TEXTS = (
-    MENU_BTN_TEXTS
-    | EXPENSE_BTN_TEXTS
-    | INCOME_BTN_TEXTS
-    | STATS_BTN_TEXTS
-    | HISTORY_BTN_TEXTS
-    | PROFILE_BTN_TEXTS
-)
 
 
 async def _ensure_reg_state_data(
@@ -82,7 +68,7 @@ async def _ensure_reg_state_data(
             await state.update_data(**defaults)
             return await state.get_data()
 
-    tg_lang = "en" if (lang_code or "").startswith("en") else "ru"
+    tg_lang = normalize_lang(lang_code or "ru")
     defaults = {
         "language": data.get("language") or tg_lang,
         "name": data.get("name") or full_name or "User",
@@ -97,7 +83,7 @@ async def _ensure_reg_state_data(
 
 async def start_registration_flow(message: Message, state: FSMContext) -> None:
     await state.clear()
-    tg_lang = "en" if (message.from_user.language_code or "").startswith("en") else "ru"
+    tg_lang = normalize_lang(message.from_user.language_code or "ru")
     await state.update_data(
         language=tg_lang,
         name=message.from_user.full_name or "User",
@@ -233,8 +219,10 @@ async def msg_reg_phone_text(message: Message, state: FSMContext) -> None:
     skip_labels = {
         t("btn_skip_phone", "ru").lower(),
         t("btn_skip_phone", "en").lower(),
+        t("btn_skip_phone", "de").lower(),
         "skip",
         "пропустить",
+        "überspringen",
     }
     phone = None if txt.lower() in skip_labels else txt[:32]
 

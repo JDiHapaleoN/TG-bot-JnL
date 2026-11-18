@@ -1,4 +1,4 @@
-"""Transaction logging (verified DB commit before confirmation), history, edit, delete, and category handlers."""
+"""Transaction logging (verified DB commit before confirmation), Cash/Card selection, history, edit, delete, and category handlers."""
 
 import logging
 import math
@@ -22,15 +22,11 @@ from bot.database.crud import (
 from bot.database.models import Transaction, User
 from bot.database.session import async_session_factory
 from bot.handlers.menu import (
-    EXPENSE_BTN_TEXTS,
-    HISTORY_BTN_TEXTS,
-    INCOME_BTN_TEXTS,
-    MENU_BTN_TEXTS,
-    PROFILE_BTN_TEXTS,
-    STATS_BTN_TEXTS,
+    ALL_NAV_TEXTS,
     build_main_menu_payload,
 )
-from bot.i18n.translations import t
+from bot.handlers.partner import notify_partner_about_expense
+from bot.i18n.translations import payment_method_label, t
 from bot.keyboards.inline import (
     add_tx_category_kb,
     back_to_menu_kb,
@@ -51,15 +47,6 @@ logger = logging.getLogger(__name__)
 router = Router(name="transactions")
 HISTORY_PAGE_SIZE = 6
 
-ALL_NAV_TEXTS = (
-    MENU_BTN_TEXTS
-    | EXPENSE_BTN_TEXTS
-    | INCOME_BTN_TEXTS
-    | STATS_BTN_TEXTS
-    | HISTORY_BTN_TEXTS
-    | PROFILE_BTN_TEXTS
-)
-
 
 def _format_tx_confirmation(tx: Transaction, user: User, new_balance) -> str:
     lang = user.language
@@ -70,12 +57,14 @@ def _format_tx_confirmation(tx: Transaction, user: User, new_balance) -> str:
         desc = f"{tx.description} ({cat_label})"
     else:
         desc = cat_label
+    pay_label = payment_method_label(getattr(tx, "payment_method", "card"), lang)
     tpl_key = "expense_saved" if tx.tx_type == "expense" else "income_saved"
     return t(
         tpl_key,
         lang,
         formatted_amount=format_money(tx.amount, tx.currency, tx_type=tx.tx_type),
         description=desc,
+        payment_method=pay_label,
         date=local_dt.strftime("%d.%m.%Y"),
         time=local_dt.strftime("%H:%M"),
         balance=format_money(new_balance, user.currency),
@@ -88,12 +77,14 @@ def _build_tx_detail_text(tx: Transaction, user: User) -> str:
     cat_code = getattr(tx, "category", "other")
     cat_label = get_category_label(cat_code, lang=lang, tx_type=tx.tx_type)
     base_desc = tx.description or cat_label
+    pay_label = payment_method_label(getattr(tx, "payment_method", "card"), lang)
     return t(
         "tx_detail_view",
         lang,
         tx_id=tx.id,
         type_label=f"{t('type_expense' if tx.tx_type == 'expense' else 'type_income', lang)} ({cat_label})",
         formatted_amount=format_money(tx.amount, tx.currency, tx_type=tx.tx_type),
+        payment_method=pay_label,
         currency=tx.currency,
         description=base_desc,
         date=local_dt.strftime("%d.%m.%Y"),
@@ -195,9 +186,10 @@ async def _render_history_page(session, user: User, offset: int = 0):
         cat_label = get_category_label(
             getattr(tx, "category", "other"), lang=lang, tx_type=tx.tx_type
         )
+        pay_icon = "💵" if getattr(tx, "payment_method", "card") == "cash" else "💳"
         desc = f"{tx.description} ({cat_label})" if tx.description else cat_label
         lines.append(
-            f"• <b>{amt_str}</b> — {desc} <i>({local_dt.strftime('%d.%m %H:%M')})</i>"
+            f"• {pay_icon} <b>{amt_str}</b> — {desc} <i>({local_dt.strftime('%d.%m %H:%M')})</i>"
         )
 
     kb = history_list_kb(
@@ -251,9 +243,94 @@ async def cb_tx_view(callback: CallbackQuery, state: FSMContext) -> None:
         await safe_edit_text(
             callback.message,
             _build_tx_detail_text(tx, user),
-            reply_markup=tx_detail_kb(tx.id, offset=offset, lang=user.language),
+            reply_markup=tx_detail_kb(
+                tx.id,
+                offset=offset,
+                lang=user.language,
+                payment_method=getattr(tx, "payment_method", "card"),
+            ),
         )
         await callback.answer()
+
+
+@router.callback_query(F.data.startswith("tx:pay:"))
+async def cb_tx_set_payment_method(
+    callback: CallbackQuery, state: FSMContext
+) -> None:
+    parts = callback.data.split(":")
+    tx_id = int(parts[2])
+    method = "cash" if parts[3] == "cash" else "card"
+    offset: Optional[int] = None
+    from_edit = False
+    if len(parts) > 4 and parts[4] != "none":
+        try:
+            offset = int(parts[4])
+        except ValueError:
+            offset = None
+    if len(parts) > 5 and parts[5] == "edit":
+        from_edit = True
+
+    async with async_session_factory() as session:
+        user = await get_user_by_telegram_id(session, callback.from_user.id)
+        if not user:
+            await callback.answer()
+            return
+        tx = await update_transaction(
+            session, tx_id=tx_id, user_id=user.id, payment_method=method
+        )
+        if not tx:
+            await callback.answer(t("tx_not_found", user.language), show_alert=True)
+            return
+
+        lang = user.language
+        pay_label = payment_method_label(tx.payment_method, lang)
+
+        if from_edit:
+            cat_label = get_category_label(
+                getattr(tx, "category", "other"), lang=lang, tx_type=tx.tx_type
+            )
+            desc = f"{tx.description} ({cat_label})" if tx.description else cat_label
+            text = t(
+                "prompt_edit_tx",
+                lang,
+                tx_id=tx.id,
+                formatted_amount=format_money(tx.amount, tx.currency, tx_type=tx.tx_type),
+                description=desc,
+                payment_method=pay_label,
+            )
+            await safe_edit_text(
+                callback.message,
+                text,
+                reply_markup=tx_edit_kb(
+                    tx.id,
+                    offset=offset,
+                    lang=lang,
+                    payment_method=tx.payment_method,
+                ),
+            )
+        elif offset is not None:
+            await safe_edit_text(
+                callback.message,
+                _build_tx_detail_text(tx, user),
+                reply_markup=tx_detail_kb(
+                    tx.id,
+                    offset=offset,
+                    lang=lang,
+                    payment_method=tx.payment_method,
+                ),
+            )
+        else:
+            new_balance = await get_user_balance(session, user.id)
+            confirm_text = _format_tx_confirmation(tx, user, new_balance)
+            await safe_edit_text(
+                callback.message,
+                confirm_text,
+                reply_markup=tx_saved_kb(
+                    tx.id, lang=lang, payment_method=tx.payment_method
+                ),
+            )
+
+        await callback.answer(t("pay_updated", lang, method=pay_label))
 
 
 @router.callback_query(F.data.startswith("tx:cat:"))
@@ -306,7 +383,12 @@ async def cb_tx_set_category(callback: CallbackQuery, state: FSMContext) -> None
             await safe_edit_text(
                 callback.message,
                 _build_tx_detail_text(tx, user),
-                reply_markup=tx_detail_kb(tx.id, offset=offset, lang=user.language),
+                reply_markup=tx_detail_kb(
+                    tx.id,
+                    offset=offset,
+                    lang=user.language,
+                    payment_method=getattr(tx, "payment_method", "card"),
+                ),
             )
         else:
             new_balance = await get_user_balance(session, user.id)
@@ -314,7 +396,11 @@ async def cb_tx_set_category(callback: CallbackQuery, state: FSMContext) -> None
             await safe_edit_text(
                 callback.message,
                 confirm_text,
-                reply_markup=tx_saved_kb(tx.id, lang=user.language),
+                reply_markup=tx_saved_kb(
+                    tx.id,
+                    lang=user.language,
+                    payment_method=getattr(tx, "payment_method", "card"),
+                ),
             )
 
         cat_label = get_category_label(cat_code, lang=user.language, tx_type=tx.tx_type)
@@ -351,14 +437,23 @@ async def cb_tx_flip_type(callback: CallbackQuery, state: FSMContext) -> None:
             await safe_edit_text(
                 callback.message,
                 _build_tx_detail_text(tx, user),
-                reply_markup=tx_detail_kb(tx.id, offset=offset, lang=user.language),
+                reply_markup=tx_detail_kb(
+                    tx.id,
+                    offset=offset,
+                    lang=user.language,
+                    payment_method=getattr(tx, "payment_method", "card"),
+                ),
             )
         else:
             new_balance = await get_user_balance(session, user.id)
             await safe_edit_text(
                 callback.message,
                 _format_tx_confirmation(tx, user, new_balance),
-                reply_markup=tx_saved_kb(tx.id, lang=user.language),
+                reply_markup=tx_saved_kb(
+                    tx.id,
+                    lang=user.language,
+                    payment_method=getattr(tx, "payment_method", "card"),
+                ),
             )
         await callback.answer(t("tx_type_flipped", user.language))
 
@@ -388,17 +483,24 @@ async def cb_tx_edit_start(callback: CallbackQuery, state: FSMContext) -> None:
             getattr(tx, "category", "other"), lang=lang, tx_type=tx.tx_type
         )
         desc = f"{tx.description} ({cat_label})" if tx.description else cat_label
+        pay_label = payment_method_label(getattr(tx, "payment_method", "card"), lang)
         text = t(
             "prompt_edit_tx",
             lang,
             tx_id=tx.id,
             formatted_amount=format_money(tx.amount, tx.currency, tx_type=tx.tx_type),
             description=desc,
+            payment_method=pay_label,
         )
         await safe_edit_text(
             callback.message,
             text,
-            reply_markup=tx_edit_kb(tx.id, offset=offset, lang=lang),
+            reply_markup=tx_edit_kb(
+                tx.id,
+                offset=offset,
+                lang=lang,
+                payment_method=getattr(tx, "payment_method", "card"),
+            ),
         )
         await callback.answer()
 
@@ -444,7 +546,12 @@ async def msg_tx_edit_save(message: Message, state: FSMContext) -> None:
             if raw_text.startswith("-") or raw_text.startswith("−") or raw_text == "0":
                 await message.answer(
                     t("invalid_tx_input", user.language),
-                    reply_markup=tx_edit_kb(int(tx_id), offset=offset, lang=user.language),
+                    reply_markup=tx_edit_kb(
+                        int(tx_id),
+                        offset=offset,
+                        lang=user.language,
+                        payment_method=getattr(existing_tx, "payment_method", "card"),
+                    ),
                     parse_mode="HTML",
                 )
                 return
@@ -472,10 +579,22 @@ async def msg_tx_edit_save(message: Message, state: FSMContext) -> None:
             getattr(tx, "category", "other"), lang=user.language, tx_type=tx.tx_type
         )
         desc = f"{tx.description} ({cat_label})" if tx.description else cat_label
+        pay_label = payment_method_label(
+            getattr(tx, "payment_method", "card"), user.language
+        )
         kb = (
-            tx_detail_kb(tx.id, offset=offset, lang=user.language)
+            tx_detail_kb(
+                tx.id,
+                offset=offset,
+                lang=user.language,
+                payment_method=getattr(tx, "payment_method", "card"),
+            )
             if offset is not None
-            else tx_saved_kb(tx.id, lang=user.language)
+            else tx_saved_kb(
+                tx.id,
+                lang=user.language,
+                payment_method=getattr(tx, "payment_method", "card"),
+            )
         )
         await message.answer(
             t(
@@ -483,6 +602,7 @@ async def msg_tx_edit_save(message: Message, state: FSMContext) -> None:
                 user.language,
                 formatted_amount=format_money(tx.amount, tx.currency, tx_type=tx.tx_type),
                 description=desc,
+                payment_method=pay_label,
                 balance=format_money(new_balance, user.currency),
             ),
             reply_markup=kb,
@@ -634,9 +754,18 @@ async def _handle_transaction_entry(
         confirm_text = _format_tx_confirmation(tx, user, new_balance)
         await message.answer(
             confirm_text,
-            reply_markup=tx_saved_kb(tx.id, lang=user.language),
+            reply_markup=tx_saved_kb(
+                tx.id,
+                lang=user.language,
+                payment_method=getattr(tx, "payment_method", "card"),
+            ),
             parse_mode="HTML",
         )
+
+        if tx.tx_type == "expense":
+            await notify_partner_about_expense(
+                getattr(message, "bot", None), session, user, tx
+            )
 
 
 @router.callback_query()

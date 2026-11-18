@@ -1,4 +1,4 @@
-"""Reply and Inline keyboards for all bot workflows."""
+"""Reply and Inline keyboards for all bot workflows (RU / EN / DE)."""
 
 from datetime import date, timedelta
 from typing import List, Optional
@@ -15,16 +15,16 @@ from aiogram.types import (
 
 from bot.config import settings
 from bot.database.models import RecurringTransaction, Transaction
-from bot.i18n.translations import t
+from bot.i18n.translations import normalize_lang, t
 from bot.services.categories import (
-    CATEGORIES,
     EXPENSE_CATEGORY_CODES,
     INCOME_CATEGORY_CODES,
     get_category_info,
     get_category_label,
+    get_category_name,
 )
 from bot.services.currencies import CURRENCIES, FEATURED_CURRENCY_CODES, format_money
-from bot.services.geo import COUNTRIES, POPULAR_TIMEZONES
+from bot.services.geo import POPULAR_TIMEZONES, get_country_name
 
 
 async def safe_edit_text(
@@ -61,8 +61,11 @@ def persistent_reply_kb(lang: str = "ru") -> ReplyKeyboardMarkup:
                 KeyboardButton(text=t("kb_history", lang)),
             ],
             [
-                KeyboardButton(text=t("kb_menu", lang)),
+                KeyboardButton(text=t("kb_partner", lang)),
                 KeyboardButton(text=t("kb_profile", lang)),
+            ],
+            [
+                KeyboardButton(text=t("kb_menu", lang)),
             ],
         ],
         resize_keyboard=True,
@@ -76,7 +79,39 @@ def language_select_kb() -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(text="🇷🇺 Русский", callback_data="reg:lang:ru"),
                 InlineKeyboardButton(text="🇬🇧 English", callback_data="reg:lang:en"),
+                InlineKeyboardButton(text="🇩🇪 Deutsch", callback_data="reg:lang:de"),
             ]
+        ]
+    )
+
+
+def language_picker_kb(lang: str = "ru") -> InlineKeyboardMarkup:
+    cur = normalize_lang(lang)
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=f"{'✅ ' if cur == 'ru' else ''}🇷🇺 Русский",
+                    callback_data="prof:lang:ru",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"{'✅ ' if cur == 'en' else ''}🇬🇧 English",
+                    callback_data="prof:lang:en",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"{'✅ ' if cur == 'de' else ''}🇩🇪 Deutsch",
+                    callback_data="prof:lang:de",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=t("btn_back_profile", lang), callback_data="menu:profile"
+                ),
+            ],
         ]
     )
 
@@ -144,8 +179,7 @@ def country_picker_kb(
     ]
     row: List[InlineKeyboardButton] = []
     for code in featured_codes:
-        c = COUNTRIES[code]
-        label = f"{c.flag} {c.name_ru if lang == 'ru' else c.name_en}"
+        label = get_country_name(code, lang)
         row.append(InlineKeyboardButton(text=label, callback_data=f"{prefix}:{code}"))
         if len(row) == 2:
             rows.append(row)
@@ -211,6 +245,7 @@ def main_menu_kb(lang: str = "ru", telegram_id: Optional[int] = None) -> InlineK
         ],
         [
             InlineKeyboardButton(text=t("btn_recurring", lang), callback_data="menu:recurring"),
+            InlineKeyboardButton(text=t("btn_partner", lang), callback_data="menu:partner"),
         ],
         [
             InlineKeyboardButton(text=t("btn_profile", lang), callback_data="menu:profile"),
@@ -253,8 +288,8 @@ def add_tx_category_kb(tx_type: str = "expense", lang: str = "ru") -> InlineKeyb
     rows: List[List[InlineKeyboardButton]] = []
     row: List[InlineKeyboardButton] = []
     for code in codes:
-        info = CATEGORIES[code]
-        name = info.name_ru if lang == "ru" else info.name_en
+        info = get_category_info(code, tx_type=tx_type)
+        name = get_category_name(code, lang=lang, tx_type=tx_type)
         row.append(
             InlineKeyboardButton(
                 text=f"{info.icon} {name}",
@@ -282,9 +317,42 @@ def selected_new_cat_kb(tx_type: str = "expense", lang: str = "ru") -> InlineKey
     )
 
 
-def tx_saved_kb(tx_id: int, lang: str = "ru") -> InlineKeyboardMarkup:
+def _payment_toggle_row(
+    tx_id: int,
+    lang: str = "ru",
+    payment_method: str = "card",
+    offset: Optional[int] = None,
+    from_edit: bool = False,
+) -> List[InlineKeyboardButton]:
+    cur_method = "cash" if (payment_method or "card").lower() == "cash" else "card"
+    cash_prefix = "✅ " if cur_method == "cash" else ""
+    card_prefix = "✅ " if cur_method == "card" else ""
+    suffix = ""
+    if offset is not None:
+        suffix = f":{offset}"
+        if from_edit:
+            suffix += ":edit"
+    elif from_edit:
+        suffix = ":none:edit"
+
+    return [
+        InlineKeyboardButton(
+            text=f"{cash_prefix}{t('pay_cash', lang)}",
+            callback_data=f"tx:pay:{tx_id}:cash{suffix}",
+        ),
+        InlineKeyboardButton(
+            text=f"{card_prefix}{t('pay_card', lang)}",
+            callback_data=f"tx:pay:{tx_id}:card{suffix}",
+        ),
+    ]
+
+
+def tx_saved_kb(
+    tx_id: int, lang: str = "ru", payment_method: str = "card"
+) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            _payment_toggle_row(tx_id, lang=lang, payment_method=payment_method),
             [
                 InlineKeyboardButton(text=t("btn_change_cat", lang), callback_data=f"tx:cat:{tx_id}"),
                 InlineKeyboardButton(text=t("btn_edit_tx", lang), callback_data=f"tx:edit:{tx_id}"),
@@ -308,8 +376,8 @@ def category_picker_kb(
     row: List[InlineKeyboardButton] = []
     suffix = f":{offset}" if offset is not None else ""
     for code in codes:
-        info = CATEGORIES[code]
-        name = info.name_ru if lang == "ru" else info.name_en
+        info = get_category_info(code, tx_type=tx_type)
+        name = get_category_name(code, lang=lang, tx_type=tx_type)
         row.append(
             InlineKeyboardButton(
                 text=f"{info.icon} {name}",
@@ -346,16 +414,17 @@ def history_list_kb(
     for tx in txs:
         cat_code = getattr(tx, "category", "other")
         cat_info = get_category_info(cat_code, tx_type=tx.tx_type)
+        pay_icon = "💵" if getattr(tx, "payment_method", "card") == "cash" else "💳"
         amt_str = format_money(tx.amount, tx.currency, tx_type=tx.tx_type)
         if tx.description:
             desc = f"{cat_info.icon} {tx.description}"
         else:
             desc = get_category_label(cat_code, lang=lang, tx_type=tx.tx_type)
-        short_desc = desc[:24] + ("…" if len(desc) > 24 else "")
+        short_desc = desc[:22] + ("…" if len(desc) > 22 else "")
         rows.append(
             [
                 InlineKeyboardButton(
-                    text=f"{amt_str} — {short_desc}",
+                    text=f"{pay_icon} {amt_str} — {short_desc}",
                     callback_data=f"tx:view:{tx.id}:{offset}",
                 )
             ]
@@ -375,9 +444,14 @@ def history_list_kb(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def tx_detail_kb(tx_id: int, offset: int = 0, lang: str = "ru") -> InlineKeyboardMarkup:
+def tx_detail_kb(
+    tx_id: int, offset: int = 0, lang: str = "ru", payment_method: str = "card"
+) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            _payment_toggle_row(
+                tx_id, lang=lang, payment_method=payment_method, offset=offset
+            ),
             [
                 InlineKeyboardButton(
                     text=t("btn_change_cat", lang), callback_data=f"tx:cat:{tx_id}:{offset}"
@@ -400,12 +474,22 @@ def tx_detail_kb(tx_id: int, offset: int = 0, lang: str = "ru") -> InlineKeyboar
 
 
 def tx_edit_kb(
-    tx_id: int, offset: Optional[int] = None, lang: str = "ru"
+    tx_id: int,
+    offset: Optional[int] = None,
+    lang: str = "ru",
+    payment_method: str = "card",
 ) -> InlineKeyboardMarkup:
     suffix = f":{offset}" if offset is not None else ""
     back_off = offset if offset is not None else 0
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            _payment_toggle_row(
+                tx_id,
+                lang=lang,
+                payment_method=payment_method,
+                offset=offset,
+                from_edit=True,
+            ),
             [
                 InlineKeyboardButton(
                     text=t("btn_change_cat", lang), callback_data=f"tx:cat:{tx_id}{suffix}"
@@ -422,6 +506,148 @@ def tx_edit_kb(
             ],
         ]
     )
+
+
+# ---------------------------------------------------------------------------
+# Partner Mode Keyboards
+# ---------------------------------------------------------------------------
+
+
+def partner_unlinked_kb(lang: str = "ru") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=t("btn_link_partner", lang), callback_data="partner:link_start"
+                )
+            ],
+            [
+                InlineKeyboardButton(text=t("btn_back_menu", lang), callback_data="menu:home")
+            ],
+        ]
+    )
+
+
+def partner_link_cancel_kb(lang: str = "ru") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=t("btn_back_partner", lang), callback_data="menu:partner"
+                ),
+                InlineKeyboardButton(text=t("btn_back_menu", lang), callback_data="menu:home"),
+            ]
+        ]
+    )
+
+
+def partner_dashboard_kb(lang: str = "ru") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=t("btn_partner_stats", lang), callback_data="partner:stats"
+                ),
+                InlineKeyboardButton(
+                    text=t("btn_partner_history", lang), callback_data="partner:history:0"
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=t("btn_partner_refresh", lang), callback_data="menu:partner"
+                ),
+                InlineKeyboardButton(text=t("btn_back_menu", lang), callback_data="menu:home"),
+            ],
+        ]
+    )
+
+
+def partner_back_kb(lang: str = "ru") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=t("btn_back_partner", lang), callback_data="menu:partner"
+                ),
+                InlineKeyboardButton(text=t("btn_back_menu", lang), callback_data="menu:home"),
+            ]
+        ]
+    )
+
+
+def partner_history_list_kb(
+    txs: List[Transaction],
+    offset: int,
+    total: int,
+    limit: int = 6,
+    lang: str = "ru",
+) -> InlineKeyboardMarkup:
+    rows: List[List[InlineKeyboardButton]] = []
+
+    for tx in txs:
+        cat_code = getattr(tx, "category", "other")
+        cat_info = get_category_info(cat_code, tx_type=tx.tx_type)
+        pay_icon = "💵" if getattr(tx, "payment_method", "card") == "cash" else "💳"
+        amt_str = format_money(tx.amount, tx.currency, tx_type=tx.tx_type)
+        if tx.description:
+            desc = f"{cat_info.icon} {tx.description}"
+        else:
+            desc = get_category_label(cat_code, lang=lang, tx_type=tx.tx_type)
+        short_desc = desc[:22] + ("…" if len(desc) > 22 else "")
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{pay_icon} {amt_str} — {short_desc}",
+                    callback_data=f"partner:tx:{tx.id}:{offset}",
+                )
+            ]
+        )
+
+    nav_row: List[InlineKeyboardButton] = []
+    if offset > 0:
+        prev_off = max(0, offset - limit)
+        nav_row.append(
+            InlineKeyboardButton(text="⬅️", callback_data=f"partner:history:{prev_off}")
+        )
+    if offset + limit < total:
+        next_off = offset + limit
+        nav_row.append(
+            InlineKeyboardButton(text="➡️", callback_data=f"partner:history:{next_off}")
+        )
+    if nav_row:
+        rows.append(nav_row)
+
+    rows.append(
+        [
+            InlineKeyboardButton(text=t("btn_back_partner", lang), callback_data="menu:partner"),
+            InlineKeyboardButton(text=t("btn_back_menu", lang), callback_data="menu:home"),
+        ]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def partner_tx_detail_kb(offset: int = 0, lang: str = "ru") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=t("btn_back_partner_history", lang),
+                    callback_data=f"partner:history:{offset}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=t("btn_back_partner", lang), callback_data="menu:partner"
+                ),
+                InlineKeyboardButton(text=t("btn_back_menu", lang), callback_data="menu:home"),
+            ],
+        ]
+    )
+
+
+# ---------------------------------------------------------------------------
+# Recurring & Profile Keyboards
+# ---------------------------------------------------------------------------
 
 
 def recurring_menu_kb(
@@ -471,18 +697,21 @@ def recurring_presets_kb(
     prefix: str = "rec:preset",
     back_cb: str = "menu:recurring",
 ) -> InlineKeyboardMarkup:
+    cur_lang = normalize_lang(lang)
     if tx_type == "income":
-        presets = (
-            ["Зарплата", "Стипендия", "Арендный доход"]
-            if lang == "ru"
-            else ["Salary", "Stipend", "Rental Income"]
-        )
+        if cur_lang == "de":
+            presets = ["Gehalt", "Stipendium", "Mieteinnahmen"]
+        elif cur_lang == "en":
+            presets = ["Salary", "Stipend", "Rental Income"]
+        else:
+            presets = ["Зарплата", "Стипендия", "Арендный доход"]
     else:
-        presets = (
-            ["Аренда квартиры", "Интернет", "Подписки", "Страховка", "Абонемент в спортзал"]
-            if lang == "ru"
-            else ["Apartment Rent", "Internet", "Subscriptions", "Insurance", "Gym Membership"]
-        )
+        if cur_lang == "de":
+            presets = ["Miete", "Internet", "Abos", "Versicherung", "Fitnessstudio"]
+        elif cur_lang == "en":
+            presets = ["Apartment Rent", "Internet", "Subscriptions", "Insurance", "Gym Membership"]
+        else:
+            presets = ["Аренда квартиры", "Интернет", "Подписки", "Страховка", "Абонемент в спортзал"]
 
     rows: List[List[InlineKeyboardButton]] = []
     for p in presets:

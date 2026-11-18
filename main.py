@@ -14,7 +14,7 @@ from aiogram.types import BotCommand
 
 from bot.config import BASE_DIR, settings
 from bot.database.session import dispose_db, init_db
-from bot.handlers import menu, profile, recurring, start, stats, transactions
+from bot.handlers import menu, partner, profile, recurring, start, stats, transactions
 from bot.middlewares.reliability import ReliabilityMiddleware, SecretRedactingFilter
 from bot.services.backup import create_database_backup, resolve_sqlite_db_path
 from bot.services.scheduler import scheduler_loop
@@ -38,6 +38,7 @@ def build_dispatcher(session_factory=None) -> Dispatcher:
     dp.include_router(menu.router)
     dp.include_router(stats.router)
     dp.include_router(recurring.router)
+    dp.include_router(partner.router)
     dp.include_router(profile.router)
     # transactions router is registered last so its quick-entry text handler catches plain amounts
     dp.include_router(transactions.router)
@@ -51,6 +52,7 @@ async def setup_bot_commands(bot: Bot) -> None:
         BotCommand(command="stats", description="Статистика за день/неделю/месяц"),
         BotCommand(command="history", description="История операций"),
         BotCommand(command="recurring", description="Регулярные доходы и расходы"),
+        BotCommand(command="partner", description="Партнёрский режим / Partner"),
         BotCommand(command="profile", description="Мой профиль и настройки"),
     ]
     try:

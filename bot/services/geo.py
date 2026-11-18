@@ -239,11 +239,54 @@ def get_country_profile(country_code: str) -> CountryProfile:
     return COUNTRIES.get(code, COUNTRIES["DE"])
 
 
+COUNTRY_NAMES_DE: Dict[str, str] = {
+    "DE": "Deutschland",
+    "UZ": "Usbekistan",
+    "RU": "Russland",
+    "US": "USA",
+    "GB": "Großbritannien",
+    "CH": "Schweiz",
+    "TR": "Türkei",
+    "CN": "China",
+    "JP": "Japan",
+    "KZ": "Kasachstan",
+    "UA": "Ukraine",
+    "BY": "Belarus",
+    "PL": "Polen",
+    "FR": "Frankreich",
+    "IT": "Italien",
+    "ES": "Spanien",
+    "NL": "Niederlande",
+    "AT": "Österreich",
+    "CZ": "Tschechien",
+    "AE": "Vereinigte Arabische Emirate",
+    "GE": "Georgien",
+    "AM": "Armenien",
+    "AZ": "Aserbaidschan",
+    "KG": "Kirgisistan",
+    "TJ": "Tadschikistan",
+    "CA": "Kanada",
+    "AU": "Australien",
+    "IN": "Indien",
+    "KR": "Südkorea",
+    "SG": "Singapur",
+    "TH": "Thailand",
+    "IL": "Israel",
+}
+
+
 def get_country_name(country_code: str, lang: str = "ru") -> str:
     code = (country_code or "DE").upper().strip()
     if code in COUNTRIES:
         c = COUNTRIES[code]
-        return f"{c.flag} {c.name_ru if lang == 'ru' else c.name_en}"
+        lang_low = (lang or "ru").lower()
+        if lang_low.startswith("de"):
+            c_name = COUNTRY_NAMES_DE.get(code, c.name_en)
+        elif lang_low.startswith("en"):
+            c_name = c.name_en
+        else:
+            c_name = c.name_ru
+        return f"{c.flag} {c_name}"
     return code
 
 

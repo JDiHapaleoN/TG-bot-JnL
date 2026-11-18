@@ -66,6 +66,13 @@ class User(Base):
     reminder_hour: Mapped[int] = mapped_column(Integer, nullable=False, default=20)
     last_reminder_date: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
 
+    partner_code: Mapped[Optional[str]] = mapped_column(
+        String(32), unique=True, index=True, nullable=True
+    )
+    partner_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
     is_registered: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
@@ -90,6 +97,7 @@ class Transaction(Base):
     amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
     currency: Mapped[str] = mapped_column(String(8), nullable=False, default="EUR")
     category: Mapped[str] = mapped_column(String(64), nullable=False, default="other")
+    payment_method: Mapped[str] = mapped_column(String(16), nullable=False, default="card")
     description: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     recurring_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("recurring_transactions.id", ondelete="SET NULL"), nullable=True

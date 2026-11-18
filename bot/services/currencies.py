@@ -132,8 +132,51 @@ def format_money(
     return base_str
 
 
+CURRENCY_NAMES_DE: Dict[str, str] = {
+    "EUR": "Euro",
+    "USD": "US-Dollar",
+    "UZS": "Usbekischer Som",
+    "RUB": "Russischer Rubel",
+    "GBP": "Britisches Pfund",
+    "CHF": "Schweizer Franken",
+    "TRY": "Türkische Lira",
+    "CNY": "Chinesischer Yuan",
+    "JPY": "Japanischer Yen",
+    "KZT": "Kasachischer Tenge",
+    "UAH": "Ukrainische Hrywnja",
+    "BYN": "Belarussischer Rubel",
+    "PLN": "Polnischer Zloty",
+    "CZK": "Tschechische Krone",
+    "AED": "VAE-Dirham",
+    "CAD": "Kanadischer Dollar",
+    "AUD": "Australischer Dollar",
+    "GEL": "Georgischer Lari",
+    "AMD": "Armenischer Dram",
+    "AZN": "Aserbaidschan-Manat",
+    "KGS": "Kirgisischer Som",
+    "TJS": "Tadschikischer Somoni",
+    "INR": "Indische Rupie",
+    "KRW": "Südkoreanischer Won",
+    "SGD": "Singapur-Dollar",
+    "HKD": "Hongkong-Dollar",
+    "THB": "Thailändischer Baht",
+    "ILS": "Israelischer Schekel",
+    "BRL": "Brasilianischer Real",
+    "MXN": "Mexikanischer Peso",
+    "SEK": "Schwedische Krone",
+    "NOK": "Norwegische Krone",
+    "DKK": "Dänische Krone",
+}
+
+
 def get_currency_label(code: str, lang: str = "ru") -> str:
     info = get_currency_info(code)
-    name = info.name_ru if lang == "ru" else info.name_en
+    lang_low = (lang or "ru").lower()
+    if lang_low.startswith("de"):
+        name = CURRENCY_NAMES_DE.get(info.code, info.name_en)
+    elif lang_low.startswith("en"):
+        name = info.name_en
+    else:
+        name = info.name_ru
     return f"{info.code} — {name} ({info.symbol})"
 
