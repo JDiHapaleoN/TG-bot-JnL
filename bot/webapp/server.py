@@ -21,11 +21,14 @@ from bot.database.crud import (
     delete_recurring_transaction,
     delete_transaction,
     delete_user_account,
+    ensure_user_partner_code,
     get_recurring_by_id,
+    get_user_by_id,
     get_user_by_telegram_id,
     get_user_recurring_transactions,
     get_user_statistics,
     get_user_transactions,
+    link_partners_permanently,
     process_due_recurring_for_user,
     to_local_datetime,
     toggle_recurring_transaction,
@@ -34,8 +37,9 @@ from bot.database.crud import (
 )
 from bot.database.models import User
 from bot.database.session import async_session_factory
+from bot.services.categories import get_category_label
 from bot.services.currencies import CURRENCIES, FEATURED_CURRENCY_CODES, format_money
-from bot.services.geo import COUNTRIES, POPULAR_TIMEZONES, get_country_profile
+from bot.services.geo import COUNTRIES, COUNTRY_NAMES_DE, POPULAR_TIMEZONES, get_country_profile
 from bot.services.parser import parse_transaction_message
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -103,6 +107,30 @@ async def _resolve_user(request: web.Request, session) -> User:
     )
 
 
+def _serialize_transactions(txs, tz_name: str, lang: str):
+    items = []
+    for tx in txs:
+        dt_local = to_local_datetime(tx.created_at, tz_name)
+        cat_code = getattr(tx, "category", "other")
+        cat_label = get_category_label(cat_code, lang=lang, tx_type=tx.tx_type)
+        items.append(
+            {
+                "id": tx.id,
+                "tx_type": tx.tx_type,
+                "amount": float(tx.amount),
+                "formatted_amount": format_money(tx.amount, tx.currency, tx_type=tx.tx_type),
+                "currency": tx.currency,
+                "category": cat_code,
+                "category_label": cat_label,
+                "payment_method": getattr(tx, "payment_method", "card") or "card",
+                "description": tx.description,
+                "date": dt_local.strftime("%d.%m.%Y"),
+                "time": dt_local.strftime("%H:%M"),
+            }
+        )
+    return items
+
+
 async def handle_index(request: web.Request) -> web.FileResponse:
     return web.FileResponse(STATIC_DIR / "index.html")
 
@@ -110,28 +138,14 @@ async def handle_index(request: web.Request) -> web.FileResponse:
 async def handle_dashboard(request: web.Request) -> web.Response:
     async with async_session_factory() as session:
         user = await _resolve_user(request, session)
+        partner_code = await ensure_user_partner_code(session, user)
         await process_due_recurring_for_user(session, user)
         stats = await get_user_statistics(session, user)
         txs, total_txs = await get_user_transactions(session, user.id, limit=50, offset=0)
         recurring = await get_user_recurring_transactions(session, user.id)
 
         cur = user.currency
-        tx_list = []
-        for tx in txs:
-            dt_local = to_local_datetime(tx.created_at, user.timezone)
-            tx_list.append(
-                {
-                    "id": tx.id,
-                    "tx_type": tx.tx_type,
-                    "amount": float(tx.amount),
-                    "formatted_amount": format_money(tx.amount, tx.currency, tx_type=tx.tx_type),
-                    "currency": tx.currency,
-                    "category": getattr(tx, "category", "other"),
-                    "description": tx.description,
-                    "date": dt_local.strftime("%d.%m.%Y"),
-                    "time": dt_local.strftime("%H:%M"),
-                }
-            )
+        tx_list = _serialize_transactions(txs, user.timezone, user.language)
 
         rec_list = []
         for rec in recurring:
@@ -154,6 +168,46 @@ async def handle_dashboard(request: web.Request) -> web.Response:
                 }
             )
 
+        partner_payload = {
+            "partner_code": partner_code,
+            "is_linked": False,
+            "partner": None,
+        }
+        if getattr(user, "partner_id", None):
+            partner_user = await get_user_by_id(session, user.partner_id)
+            if partner_user:
+                await process_due_recurring_for_user(session, partner_user)
+                p_stats = await get_user_statistics(session, partner_user)
+                p_txs, p_total = await get_user_transactions(
+                    session, partner_user.id, limit=30, offset=0
+                )
+                p_cur = partner_user.currency
+                partner_payload = {
+                    "partner_code": partner_code,
+                    "is_linked": True,
+                    "partner": {
+                        "name": partner_user.name,
+                        "currency": p_cur,
+                        "formatted_balance": format_money(p_stats.balance, p_cur),
+                        "formatted_month_income": format_money(
+                            p_stats.month_income, p_cur, tx_type="income"
+                        ),
+                        "formatted_month_expense": format_money(
+                            p_stats.month_expense, p_cur, tx_type="expense"
+                        ),
+                        "formatted_month_card": format_money(
+                            p_stats.month_card_expense, p_cur, tx_type="expense"
+                        ),
+                        "formatted_month_cash": format_money(
+                            p_stats.month_cash_expense, p_cur, tx_type="expense"
+                        ),
+                        "total_transactions": p_total,
+                        "transactions": _serialize_transactions(
+                            p_txs, user.timezone, user.language
+                        ),
+                    },
+                }
+
         reg_local = to_local_datetime(user.created_at, user.timezone)
         payload = {
             "user": {
@@ -164,6 +218,7 @@ async def handle_dashboard(request: web.Request) -> web.Response:
                 "currency": user.currency,
                 "timezone": user.timezone,
                 "language": user.language,
+                "partner_code": partner_code,
                 "notify_recurring": user.notify_recurring,
                 "daily_reminder": user.daily_reminder,
                 "reminder_hour": user.reminder_hour,
@@ -176,6 +231,14 @@ async def handle_dashboard(request: web.Request) -> web.Response:
                 "formatted_month_income": format_money(stats.month_income, cur, tx_type="income"),
                 "month_expense": float(stats.month_expense),
                 "formatted_month_expense": format_money(stats.month_expense, cur, tx_type="expense"),
+                "month_card_expense": float(stats.month_card_expense),
+                "formatted_month_card_expense": format_money(
+                    stats.month_card_expense, cur, tx_type="expense"
+                ),
+                "month_cash_expense": float(stats.month_cash_expense),
+                "formatted_month_cash_expense": format_money(
+                    stats.month_cash_expense, cur, tx_type="expense"
+                ),
                 "today_expense": float(stats.today_expense),
                 "formatted_today_expense": format_money(stats.today_expense, cur, tx_type="expense"),
                 "today_income": float(stats.today_income),
@@ -194,6 +257,7 @@ async def handle_dashboard(request: web.Request) -> web.Response:
             "transactions": tx_list,
             "total_transactions": total_txs,
             "recurring": rec_list,
+            "partner_info": partner_payload,
             "catalog": {
                 "currencies": [
                     {
@@ -210,6 +274,7 @@ async def handle_dashboard(request: web.Request) -> web.Response:
                         "flag": c.flag,
                         "name_ru": c.name_ru,
                         "name_en": c.name_en,
+                        "name_de": COUNTRY_NAMES_DE.get(c.code, c.name_en),
                         "currency": c.currency,
                         "timezone": c.default_timezone,
                     }
@@ -227,6 +292,8 @@ async def handle_add_tx(request: web.Request) -> web.Response:
         user = await _resolve_user(request, session)
         quick_text = data.get("quick_text")
         default_type = data.get("tx_type", "expense")
+        payment_method = data.get("payment_method")
+        category = data.get("category")
 
         if quick_text:
             parsed = parse_transaction_message(str(quick_text), default_type=default_type)
@@ -253,6 +320,8 @@ async def handle_add_tx(request: web.Request) -> web.Response:
             amount=amount,
             currency=user.currency,
             description=description,
+            category=category,
+            payment_method=payment_method,
         )
         stats = await get_user_statistics(session, user)
         dt_local = to_local_datetime(tx.created_at, user.timezone)
@@ -264,6 +333,8 @@ async def handle_add_tx(request: web.Request) -> web.Response:
                     "tx_type": tx.tx_type,
                     "formatted_amount": format_money(tx.amount, tx.currency, tx_type=tx.tx_type),
                     "description": tx.description,
+                    "category": getattr(tx, "category", "other"),
+                    "payment_method": getattr(tx, "payment_method", "card"),
                     "date": dt_local.strftime("%d.%m.%Y"),
                     "time": dt_local.strftime("%H:%M"),
                     "formatted_balance": format_money(stats.balance, user.currency),
@@ -286,6 +357,7 @@ async def handle_update_tx(request: web.Request) -> web.Response:
                 description=data.get("description"),
                 tx_type=data.get("tx_type"),
                 category=data.get("category"),
+                payment_method=data.get("payment_method"),
             )
         except ValueError as exc:
             return web.json_response({"error": str(exc)}, status=400)
@@ -302,6 +374,25 @@ async def handle_delete_tx(request: web.Request) -> web.Response:
         if not deleted:
             return web.json_response({"error": "Not found"}, status=404)
         return web.json_response({"ok": True})
+
+
+async def handle_link_partner(request: web.Request) -> web.Response:
+    data = await request.json()
+    raw_code = str(data.get("partner_code", "")).strip()
+    async with async_session_factory() as session:
+        user = await _resolve_user(request, session)
+        status, partner_user = await link_partners_permanently(
+            session, user.telegram_id, raw_code
+        )
+        if status != "ok":
+            return web.json_response({"ok": False, "status": status}, status=400)
+        return web.json_response(
+            {
+                "ok": True,
+                "status": "ok",
+                "partner_name": partner_user.name if partner_user else "Partner",
+            }
+        )
 
 
 async def handle_add_recurring(request: web.Request) -> web.Response:
@@ -425,7 +516,17 @@ async def handle_export_csv(request: web.Request) -> web.Response:
         output = io.StringIO()
         writer = csv.writer(output)
         writer.writerow(
-            ["ID", "Date", "Time", "Type", "Category", "Amount", "Currency", "Description"]
+            [
+                "ID",
+                "Date",
+                "Time",
+                "Type",
+                "Category",
+                "PaymentMethod",
+                "Amount",
+                "Currency",
+                "Description",
+            ]
         )
         for tx in txs:
             dt_local = to_local_datetime(tx.created_at, user.timezone)
@@ -436,6 +537,7 @@ async def handle_export_csv(request: web.Request) -> web.Response:
                     dt_local.strftime("%H:%M:%S"),
                     tx.tx_type,
                     getattr(tx, "category", "other"),
+                    getattr(tx, "payment_method", "card"),
                     f"{tx.amount:.2f}",
                     tx.currency,
                     tx.description,
@@ -456,6 +558,7 @@ def create_webapp() -> web.Application:
     app.router.add_post("/api/transactions", handle_add_tx)
     app.router.add_put("/api/transactions/{id}", handle_update_tx)
     app.router.add_delete("/api/transactions/{id}", handle_delete_tx)
+    app.router.add_post("/api/partner/link", handle_link_partner)
     app.router.add_post("/api/recurring", handle_add_recurring)
     app.router.add_put("/api/recurring/{id}", handle_update_recurring)
     app.router.add_post("/api/recurring/{id}/toggle", handle_toggle_recurring)

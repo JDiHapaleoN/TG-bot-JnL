@@ -9,7 +9,7 @@
 </head>
 <body>
   <div class="app-shell">
-    <!-- Main Card matching Screenshot 1 -->
+    <!-- Main Card -->
     <header class="top-card">
       <div class="brand-row">
         <h1 class="brand-title">Personal Finance Bot</h1>
@@ -42,13 +42,13 @@
           type="text"
           id="quick-input"
           class="quick-input"
-          placeholder="Быстрый ввод: 5 Обед, 12.50, +1500 Зарплата..."
+          placeholder="Быстрый ввод: 6.1 lidl, 12.50, +1500 Зарплата..."
           autocomplete="off"
         />
         <button type="submit" class="quick-submit-btn">➤</button>
       </form>
 
-      <!-- Main Menu Grid matching Screenshot 1 -->
+      <!-- Main Menu Grid -->
       <div class="section-heading" data-i18n="main_menu">Основное меню</div>
       <div class="menu-grid">
         <button type="button" class="menu-btn" onclick="openTxModal('expense')">
@@ -84,16 +84,26 @@
           </svg>
           <span data-i18n="btn_history">История</span>
         </button>
-      </div>
 
-      <button type="button" class="menu-btn full-width-btn" id="tab-btn-recurring" onclick="switchPanel('recurring')">
-        <svg class="menu-icon-inline" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-          <polyline points="23 4 23 10 17 10"></polyline>
-          <polyline points="1 20 1 14 7 14"></polyline>
-          <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
-        </svg>
-        <span data-i18n="btn_recurring">Регулярные доходы и расходы</span>
-      </button>
+        <button type="button" class="menu-btn" id="tab-btn-recurring" onclick="switchPanel('recurring')">
+          <svg class="menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <polyline points="23 4 23 10 17 10"></polyline>
+            <polyline points="1 20 1 14 7 14"></polyline>
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+          </svg>
+          <span data-i18n="btn_recurring">Регулярные</span>
+        </button>
+
+        <button type="button" class="menu-btn" id="tab-btn-partner" onclick="switchPanel('partner')">
+          <svg class="menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+            <circle cx="8.5" cy="7" r="4"></circle>
+            <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+            <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+          </svg>
+          <span data-i18n="btn_partner">Партнёр</span>
+        </button>
+      </div>
 
       <button type="button" class="menu-btn full-width-btn" id="tab-btn-profile" onclick="switchPanel('profile')">
         <svg class="menu-icon-inline" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
@@ -129,6 +139,14 @@
             <span class="stat-val income-positive" id="stat-total-inc">+ €0.00</span>
           </div>
           <div class="stat-item">
+            <span class="stat-label" data-i18n="stat_month_card">💳 Оплата картой (месяц)</span>
+            <span class="stat-val" id="stat-month-card">− €0.00</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label" data-i18n="stat_month_cash">💵 Наличными (месяц)</span>
+            <span class="stat-val" id="stat-month-cash">− €0.00</span>
+          </div>
+          <div class="stat-item">
             <span class="stat-label" data-i18n="stat_net_diff">Разница (доходы − расходы)</span>
             <span class="stat-val" id="stat-net-diff">€0.00</span>
           </div>
@@ -152,9 +170,67 @@
       <section class="sub-card hidden" id="panel-recurring">
         <div class="panel-header">
           <h2 data-i18n="btn_recurring">🔄 Регулярные операции</h2>
-          <button type="button" class="small-action-btn" onclick="openRecurringModal()">+ Добавить</button>
+          <button type="button" class="small-action-btn" onclick="openRecurringModal()" data-i18n="btn_add_rec">+ Добавить</button>
         </div>
         <div id="recurring-list" class="tx-list"></div>
+      </section>
+
+      <!-- Partner Panel -->
+      <section class="sub-card hidden" id="panel-partner">
+        <div class="panel-header">
+          <h2 data-i18n="partner_title">🤝 Партнёрский режим</h2>
+        </div>
+
+        <div class="stat-item" style="margin-bottom: 12px;">
+          <span class="stat-label" data-i18n="your_partner_code">Ваш личный партнёрский код:</span>
+          <span class="stat-val income-positive" id="my-partner-code">JNL-......</span>
+        </div>
+
+        <div id="partner-unlinked-box">
+          <form id="partner-link-form" class="quick-bar" style="margin-bottom: 0;">
+            <input
+              type="text"
+              id="partner-code-input"
+              class="quick-input"
+              placeholder="Введите код партнёра (JNL-XXXXXX)..."
+              required
+            />
+            <button type="submit" class="quick-submit-btn" data-i18n="btn_link">🔗</button>
+          </form>
+        </div>
+
+        <div id="partner-linked-box" class="hidden">
+          <div class="stats-grid" style="margin-bottom: 14px;">
+            <div class="stat-item">
+              <span class="stat-label" data-i18n="partner_name_lbl">Партнёр</span>
+              <span class="stat-val" id="partner-name-val">—</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-label" data-i18n="partner_balance_lbl">Баланс партнёра</span>
+              <span class="stat-val income-positive" id="partner-balance-val">€0.00</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-label" data-i18n="partner_inc_lbl">Доходы за месяц</span>
+              <span class="stat-val income-positive" id="partner-inc-val">+ €0.00</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-label" data-i18n="partner_exp_lbl">Расходы за месяц</span>
+              <span class="stat-val" id="partner-exp-val">− €0.00</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-label" data-i18n="stat_month_card">💳 Картой</span>
+              <span class="stat-val" id="partner-card-val">− €0.00</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-label" data-i18n="stat_month_cash">💵 Наличными</span>
+              <span class="stat-val" id="partner-cash-val">− €0.00</span>
+            </div>
+          </div>
+          <div class="panel-header">
+            <h2 data-i18n="partner_history_lbl">🕒 История партнёра</h2>
+          </div>
+          <div id="partner-history-list" class="tx-list"></div>
+        </div>
       </section>
 
       <!-- Profile Panel -->
@@ -188,6 +264,7 @@
             <select id="prof-language">
               <option value="ru">🇷🇺 Русский</option>
               <option value="en">🇬🇧 English</option>
+              <option value="de">🇩🇪 Deutsch</option>
             </select>
           </label>
           <label class="checkbox-row">
@@ -220,11 +297,18 @@
         <input type="hidden" id="tx-modal-type" value="expense" />
         <label class="form-field">
           <span data-i18n="lbl_amount">Сумма</span>
-          <input type="number" step="0.01" min="0.01" id="tx-modal-amount" placeholder="12.50" required />
+          <input type="number" step="0.01" min="0.01" id="tx-modal-amount" placeholder="6.10" required />
         </label>
         <label class="form-field">
-          <span data-i18n="lbl_desc">Описание (необязательно)</span>
-          <input type="text" id="tx-modal-desc" placeholder="Обед в McDonald's" />
+          <span data-i18n="lbl_desc">Магазин или описание (необязательно)</span>
+          <input type="text" id="tx-modal-desc" placeholder="lidl, rewe, ikea, mediamarkt..." />
+        </label>
+        <label class="form-field">
+          <span data-i18n="lbl_payment_method">Способ оплаты</span>
+          <select id="tx-modal-payment">
+            <option value="card" data-i18n="opt_pay_card">💳 Карта</option>
+            <option value="cash" data-i18n="opt_pay_cash">💵 Наличные</option>
+          </select>
         </label>
         <button type="submit" class="primary-btn" data-i18n="btn_save">Сохранить</button>
       </form>
@@ -257,10 +341,10 @@
         <label class="form-field">
           <span data-i18n="lbl_period">Периодичность</span>
           <select id="rec-period">
-            <option value="monthly">Ежемесячно</option>
-            <option value="weekly">Еженедельно</option>
-            <option value="daily">Ежедневно</option>
-            <option value="yearly">Ежегодно</option>
+            <option value="monthly">Ежемесячно / Monthly / Monatlich</option>
+            <option value="weekly">Еженедельно / Weekly / Wöchentlich</option>
+            <option value="daily">Ежедневно / Daily / Täglich</option>
+            <option value="yearly">Ежегодно / Yearly / Jährlich</option>
           </select>
         </label>
         <label class="form-field">
@@ -278,4 +362,3 @@
   <script src="/static/app.js"></script>
 </body>
 </html>
-
