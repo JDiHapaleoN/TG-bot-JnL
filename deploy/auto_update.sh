@@ -44,6 +44,31 @@ verify_canonical_dir "$BACKUP_DIR"
 
 cd "$INSTALL_DIR" || exit 1
 
+if [ "${JNL_AUTO_TIMER:-0}" = "1" ]; then
+    # In timer mode, check if origin/main has a new commit before stopping the bot
+    git fetch origin main --quiet || {
+        echo "[jnl-bot-updater] ERROR: Failed to fetch from origin/main." >&2
+        exit 1
+    }
+    LOCAL_HASH=$(git rev-parse HEAD)
+    REMOTE_HASH=$(git rev-parse origin/main)
+    if [ "$LOCAL_HASH" = "$REMOTE_HASH" ]; then
+        exit 0
+    fi
+    echo "[jnl-bot-updater] Timer detected new commit ($LOCAL_HASH -> $REMOTE_HASH). Gracefully stopping active bot process..."
+    if [ -f "$PERSISTENT_DATA_DIR/bot.lock" ]; then
+        BOT_PID=$(head -n 1 "$PERSISTENT_DATA_DIR/bot.lock" 2>/dev/null | tr -d '[:space:]' || true)
+        if [ -n "$BOT_PID" ] && kill -0 "$BOT_PID" 2>/dev/null; then
+            kill -TERM "$BOT_PID" 2>/dev/null || true
+            for _ in 1 2 3 4 5 6; do
+                kill -0 "$BOT_PID" 2>/dev/null || break
+                sleep 1
+            done
+        fi
+    fi
+    export JNL_SKIP_SYSTEMCTL_CHECK=1
+fi
+
 # Step 0: Detect active bot service/process and refuse to run while bot is active
 echo "[jnl-bot-updater] Step 0/8: Verifying that JnL-Bot is stopped before update..."
 if ! "$VENV_PYTHON" -m bot.database.migrations --check-stopped --db-path "$DB_FILE"; then

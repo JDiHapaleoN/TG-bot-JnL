@@ -3,7 +3,8 @@ Description=JnL-Bot GitHub Auto-Update Timer
 
 [Timer]
 OnBootSec=1min
-OnUnitActiveSec=60s
+OnCalendar=*:*:00
+AccuracySec=5s
 Unit=jnl-bot-updater.service
 
 [Install]

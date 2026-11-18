@@ -3,6 +3,7 @@
 import asyncio
 import fcntl
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -68,9 +69,13 @@ def _acquire_single_instance_lock() -> Optional[object]:
     lock_dir = db_path.parent if db_path else (BASE_DIR / "data")
     lock_dir.mkdir(parents=True, exist_ok=True)
     lock_path = lock_dir / "bot.lock"
-    lock_file = open(lock_path, "w", encoding="utf-8")
+    lock_file = open(lock_path, "a+", encoding="utf-8")
     try:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_file.seek(0)
+        lock_file.truncate()
+        lock_file.write(f"{os.getpid()}\n")
+        lock_file.flush()
         return lock_file
     except OSError:
         lock_file.close()
