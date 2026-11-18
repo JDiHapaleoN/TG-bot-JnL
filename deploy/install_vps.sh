@@ -275,6 +275,55 @@ if [ -L "$PROD_ENV_FILE" ]; then
     echo "❌ FATAL: $PROD_ENV_FILE must be a regular file, not a symlink!" >&2
     exit 1
 fi
+
+# Automatically upgrade legacy in-repo DATABASE_URL / BACKUP_DIR in existing /var/lib/jnl-bot/.env
+# while preserving BOT_TOKEN and all other settings.
+python3 - "$PROD_ENV_FILE" "$PERSISTENT_DATA_DIR/finance_bot.db" "$BACKUP_DIR" <<'PYEOF'
+import sys
+from pathlib import Path
+
+env_path = Path(sys.argv[1])
+canonical_db = f"sqlite+aiosqlite:///{sys.argv[2]}"
+canonical_backup = sys.argv[3]
+
+lines = env_path.read_text(encoding="utf-8").splitlines()
+updated = []
+has_db = False
+has_bkp = False
+has_app_env = False
+
+for line in lines:
+    stripped = line.strip()
+    if stripped.startswith("DATABASE_URL="):
+        has_db = True
+        val = stripped.split("=", 1)[1].strip()
+        if "./data/" in val or "/opt/jnl-bot/data/" in val or val != canonical_db:
+            updated.append(f"DATABASE_URL={canonical_db}")
+        else:
+            updated.append(line)
+    elif stripped.startswith("BACKUP_DIR="):
+        has_bkp = True
+        val = stripped.split("=", 1)[1].strip()
+        if "/opt/jnl-bot" in val or not val or val != canonical_backup:
+            updated.append(f"BACKUP_DIR={canonical_backup}")
+        else:
+            updated.append(line)
+    elif stripped.startswith("APP_ENV="):
+        has_app_env = True
+        updated.append("APP_ENV=production")
+    else:
+        updated.append(line)
+
+if not has_app_env:
+    updated.insert(0, "APP_ENV=production")
+if not has_db:
+    updated.append(f"DATABASE_URL={canonical_db}")
+if not has_bkp:
+    updated.append(f"BACKUP_DIR={canonical_backup}")
+
+env_path.write_text("\n".join(updated) + "\n", encoding="utf-8")
+PYEOF
+
 chmod 600 "$PROD_ENV_FILE"
 chown -h "$BOT_USER:$BOT_GROUP" "$PROD_ENV_FILE"
 
