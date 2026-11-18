@@ -1,11 +1,9 @@
 [Unit]
-Description=JnL-Bot Update Check Timer (Disabled by default for client website safety)
-# To prevent unexpected automated changes on production servers hosting client websites,
-# this timer is NOT enabled by default. Updates should be executed via deploy/auto_update.sh.
+Description=JnL-Bot GitHub Auto-Update Timer
 
 [Timer]
-OnBootSec=15min
-OnUnitActiveSec=1h
+OnBootSec=1min
+OnUnitActiveSec=60s
 Unit=jnl-bot-updater.service
 
 [Install]

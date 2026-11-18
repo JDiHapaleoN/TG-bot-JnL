@@ -1,5 +1,5 @@
 [Unit]
-Description=JnL-Bot Controlled Updater Service (Requires jnl-bot.service to be stopped first)
+Description=JnL-Bot Controlled Updater Service
 After=network-online.target
 Wants=network-online.target
 
@@ -9,11 +9,16 @@ User=jnl-bot
 Group=jnl-bot
 WorkingDirectory=/opt/jnl-bot
 EnvironmentFile=/var/lib/jnl-bot/.env
+# Only proceed when origin/main has a new commit (runs as unprivileged jnl-bot)
+ExecCondition=/bin/bash -c 'cd /opt/jnl-bot && git fetch origin main --quiet && [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]'
+# Systemd native '+' prefix stops jnl-bot.service before migration and restarts it after completion
+ExecStartPre=+/bin/systemctl stop jnl-bot.service
 ExecStart=/opt/jnl-bot/deploy/auto_update.sh
+ExecStopPost=+/bin/systemctl start jnl-bot.service
 StandardOutput=journal
 StandardError=journal
 
-# Security Hardening & Sandboxing (No sudo, no root privileges)
+# Security Hardening & Sandboxing (No sudo, no root privileges for ExecStart)
 UMask=0077
 NoNewPrivileges=true
 ProtectSystem=strict
