@@ -43,6 +43,7 @@ verify_canonical_dir "$PERSISTENT_DATA_DIR"
 verify_canonical_dir "$BACKUP_DIR"
 
 cd "$INSTALL_DIR" || exit 1
+git config --global --add safe.directory "$INSTALL_DIR" 2>/dev/null || true
 
 if [ "${JNL_AUTO_TIMER:-0}" = "1" ]; then
     # In timer mode, check if origin/main has a new commit before stopping the bot

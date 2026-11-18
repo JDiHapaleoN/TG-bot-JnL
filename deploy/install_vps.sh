@@ -238,6 +238,7 @@ verify_canonical_dir "$INSTALL_DIR" "/opt/jnl-bot"
 if [ ! -d "$INSTALL_DIR/.git" ]; then
     git clone "$REPO_URL" "$INSTALL_DIR"
 else
+    git config --global --add safe.directory "$INSTALL_DIR" 2>/dev/null || true
     cd "$INSTALL_DIR"
     git fetch origin main
     git reset --hard origin/main
