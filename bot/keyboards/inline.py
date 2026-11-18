@@ -25,6 +25,7 @@ from bot.services.categories import (
 )
 from bot.services.currencies import CURRENCIES, FEATURED_CURRENCY_CODES, format_money
 from bot.services.geo import POPULAR_TIMEZONES, get_country_name
+from bot.webapp.tunnel import get_active_webapp_url
 
 
 async def safe_edit_text(
@@ -252,8 +253,9 @@ def main_menu_kb(lang: str = "ru", telegram_id: Optional[int] = None) -> InlineK
         ],
     ]
 
-    if settings.webapp_url and settings.webapp_url.startswith("https://"):
-        url = settings.webapp_url.rstrip("/")
+    active_webapp_url = get_active_webapp_url()
+    if active_webapp_url and active_webapp_url.startswith("https://"):
+        url = active_webapp_url.rstrip("/")
         rows.append(
             [
                 InlineKeyboardButton(

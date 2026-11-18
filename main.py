@@ -19,6 +19,7 @@ from bot.middlewares.reliability import ReliabilityMiddleware, SecretRedactingFi
 from bot.services.backup import create_database_backup, resolve_sqlite_db_path
 from bot.services.scheduler import scheduler_loop
 from bot.webapp.server import create_webapp
+from bot.webapp.tunnel import run_cloudflared_tunnel_loop
 
 logging.basicConfig(
     level=logging.INFO,
@@ -122,43 +123,62 @@ async def main() -> None:
             logger.warning("Startup backup warning: %s", exc)
 
         # 4. Start embedded Telegram Mini App (WebApp) HTTP server safely (if enabled)
-        runner: Optional[web.AppRunner] = None
-        if settings.webapp_port > 0:
-            try:
-                webapp = create_webapp()
-                runner = web.AppRunner(webapp)
-                await runner.setup()
-                site = web.TCPSite(runner, host=settings.webapp_host, port=settings.webapp_port)
-                await site.start()
-                logger.info(
-                    "Telegram Mini App (WebApp) server running at http://%s:%s",
-                    settings.webapp_host,
-                    settings.webapp_port,
-                )
-            except OSError as exc:
-                logger.warning(
-                    "Could not bind WebApp port %s (%s). Continuing with Telegram Bot polling only.",
-                    settings.webapp_port,
-                    exc,
-                )
-                runner = None
-
-        bot: Optional[Bot] = None
         token_valid = bool(
             settings.bot_token
             and settings.bot_token != "your_telegram_bot_token_here"
             and ":" in settings.bot_token
         )
+        effective_webapp_port = (
+            settings.webapp_port
+            if settings.webapp_port > 0
+            else (8085 if token_valid else 0)
+        )
+
+        runner: Optional[web.AppRunner] = None
+        if effective_webapp_port > 0:
+            try:
+                webapp = create_webapp()
+                runner = web.AppRunner(webapp)
+                await runner.setup()
+                site = web.TCPSite(
+                    runner, host=settings.webapp_host, port=effective_webapp_port
+                )
+                await site.start()
+                logger.info(
+                    "Telegram Mini App (WebApp) server running at http://%s:%s",
+                    settings.webapp_host,
+                    effective_webapp_port,
+                )
+            except OSError as exc:
+                logger.warning(
+                    "Could not bind WebApp port %s (%s). Continuing with Telegram Bot polling only.",
+                    effective_webapp_port,
+                    exc,
+                )
+                runner = None
+
+        bot: Optional[Bot] = None
 
         if token_valid:
             bot = Bot(token=settings.bot_token)
             dp = build_dispatcher()
             await setup_bot_commands(bot)
             scheduler_task = asyncio.create_task(scheduler_loop(bot=bot, interval_seconds=60))
+            tunnel_task: Optional[asyncio.Task] = None
+            if runner is not None:
+                tunnel_task = asyncio.create_task(
+                    run_cloudflared_tunnel_loop(effective_webapp_port, bot=bot)
+                )
             logger.info("Starting Telegram Bot polling...")
             try:
                 await dp.start_polling(bot)
             finally:
+                if tunnel_task is not None:
+                    tunnel_task.cancel()
+                    try:
+                        await tunnel_task
+                    except asyncio.CancelledError:
+                        pass
                 scheduler_task.cancel()
                 try:
                     await scheduler_task

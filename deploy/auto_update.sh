@@ -160,6 +160,7 @@ echo "[jnl-bot-updater] Step 5/8: Verifying WAL-safe SQLite runtime..."
 if [ "${JNL_SKIP_SQLITE_BUILD:-0}" != "1" ]; then
     "$VENV_PYTHON" "$INSTALL_DIR/deploy/install_sqlite_amalgamation.py" || rollback "sqlite_amalgamation"
     "$VENV_PYTHON" -m bot.database.check_sqlite || rollback "check_sqlite"
+    "$VENV_PYTHON" -m bot.webapp.tunnel || true
 fi
 
 # Step 6: Test new migrations on isolated copy using newly installed code

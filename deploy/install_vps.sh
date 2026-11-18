@@ -340,6 +340,7 @@ echo "    Verifying WAL-safe SQLite runtime (>= 3.51.3) in virtual environment..
 
 echo "    Executing mandatory fail-closed SQLite WAL diagnostic verification..."
 "$INSTALL_DIR/.venv/bin/python" -m bot.database.check_sqlite
+"$INSTALL_DIR/.venv/bin/python" -m bot.webapp.tunnel || true
 
 chmod +x "$INSTALL_DIR/deploy/"*.sh
 
